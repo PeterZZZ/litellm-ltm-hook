@@ -1,0 +1,16 @@
+[project]
+name = "litellm-ltm-hook"
+version = "0.1.0"
+description = "Callback hooks for integrating long-term memory solutions with the LiteLLM proxy"
+requires-python = ">=3.10"
+license = { text = "Apache-2.0" }
+
+# Runtime deps the hook imports directly. litellm is installed in the proxy
+# container, but listing it here lets `uv run pytest` resolve a working
+# environment locally. httpx is the hook's HTTP client. pytest is grouped here
+# so `uv run pytest` works without an extra flag.
+dependencies = [
+    "httpx",
+    "litellm",
+    "pytest",
+]
