@@ -2,7 +2,7 @@
 
 This guide covers the current MemMachine integration in `litellm-ltm-hook`.
 
-Three test files, in increasing scope:
+Four test files, in increasing scope:
 
 | File | Scope | Requires |
 |------|-------|----------|
