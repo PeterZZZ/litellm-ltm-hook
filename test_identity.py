@@ -184,6 +184,13 @@ class TestNamespaceHeaders:
         _, org_id, project_id, _ = h._identity(data, key)
         assert (org_id, project_id) == (h._to_org_id(PERSON), h.PROJECT_ID)
 
+    @pytest.mark.parametrize("header", ["x-memmachine-org", "x-memmachine-project"])
+    def test_a_blank_value_counts_as_absent(self, signing, header):
+        """Whitespace selects nothing, so it is not a selector to refuse."""
+        data, key = request({"x-openwebui-user-jwt": token(), header: "   "})
+        _, org_id, project_id, _ = h._identity(data, key)
+        assert (org_id, project_id) == (h._to_org_id(PERSON), h.PROJECT_ID)
+
     def test_still_allowed_without_a_token(self, signing):
         data, key = request({"x-memmachine-org": "shared"})
         assert h._identity(data, key)[1] == "shared"
@@ -321,6 +328,34 @@ class TestPreCallRefusesBeforeEarlyReturns:
             "model": "memmachine-m",
             "messages": messages,
             "proxy_server_request": {"headers": dict(FORGED)},
+        }
+        with pytest.raises(h.MemMachineRequestError) as caught:
+            asyncio.run(h.MemMachineHook().async_pre_call_hook(None, None, data, "completion"))
+        assert caught.value.status_code == 401
+
+    @pytest.mark.parametrize(
+        "messages",
+        [
+            pytest.param([{"role": "assistant", "content": "hi"}], id="no user message"),
+            pytest.param([{"role": "user", "content": "   "}], id="empty query"),
+            pytest.param(
+                [
+                    {"role": "system", "content": h.MEMORY_MARKER + " earlier"},
+                    {"role": "user", "content": "hi"},
+                ],
+                id="memory already injected",
+            ),
+        ],
+    )
+    def test_namespace_header_with_a_good_token_is_refused(self, signing, messages):
+        """The header rule holds on the same requests as the bad-token rule, so
+        whether a request gets a 401 does not depend on its message shape."""
+        data = {
+            "model": "memmachine-m",
+            "messages": messages,
+            "proxy_server_request": {
+                "headers": {"x-openwebui-user-jwt": token(), "x-memmachine-org": "bob"}
+            },
         }
         with pytest.raises(h.MemMachineRequestError) as caught:
             asyncio.run(h.MemMachineHook().async_pre_call_hook(None, None, data, "completion"))

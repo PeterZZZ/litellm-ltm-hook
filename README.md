@@ -13,7 +13,7 @@ For requests handled by the MemMachine hook:
 - **Before** the LLM call: relevant memories for the current user are searched and injected as a `<memory>` system block — a `role:system` message inserted right before the last user message, on all three routes (`/v1/chat/completions`, `/v1/messages`, `/v1/responses`).
 - **After** the response: the user's message and the assistant's reply are stored back to the selected MemMachine `(org, project)` namespace.
 
-Clients don't need to change — OpenAI Chat Completions (`/v1/chat/completions`), OpenAI Responses (`/v1/responses`), and Anthropic Messages (`/v1/messages`) all work. The user's identity is the virtual key owner's email, or — for applications that reach LiteLLM through one shared virtual key — the verified email in Open WebUI's signed user token. Either way it is slugified for `producer`/`produced_for`. Requests may select a namespace with `x-memmachine-org` and `x-memmachine-project`; otherwise the slugified user and `default` project are used.
+Clients don't need to change — OpenAI Chat Completions (`/v1/chat/completions`), OpenAI Responses (`/v1/responses`), and Anthropic Messages (`/v1/messages`) all work. The user's identity is the virtual key owner's email, or — for applications that reach LiteLLM through one shared virtual key — the verified email in Open WebUI's signed user token. Either way it is slugified for `producer`/`produced_for`. Requests identified by a virtual key may select a namespace with `x-memmachine-org` and `x-memmachine-project` (a token-identified request is refused if it sends them); otherwise the slugified user and `default` project are used.
 
 ## Files
 
@@ -157,15 +157,16 @@ rather than by the virtual key. The signature, the `iss` claim and the expiry ar
 all checked, and `HS256` is pinned so a token declaring `alg: none` is refused. A
 token that is present but does not verify fails the request with **401**, on
 every route and even when the request would not have searched memory; it is
-never quietly downgraded to the shared key's identity. This applies to requests the hook acts on. A request it skips —
-`x-memmachine-disable: 1`, or a model outside `MEMMACHINE_MODEL_PREFIX` — is
-not inspected at all, so a bad token on one is neither rejected nor able to
-reach any memory. The store path runs after
+never quietly downgraded to the shared key's identity. This applies to requests
+the hook acts on. A request it skips — `x-memmachine-disable: 1`, or a model
+outside `MEMMACHINE_MODEL_PREFIX` — is not inspected at all, so a bad token on
+one is neither rejected nor able to reach any memory. The store path runs after
 the model has answered, so the expiry is judged against the moment the request
 started rather than the moment the memory is written.
 
 On a request identified this way, `x-memmachine-org` and `x-memmachine-project`
-are refused with **401**. The two rules belong together: behind a shared key the
+are refused with **401**, under the same rule as a bad token: even when the
+request would not have searched memory. The two rules belong together: behind a shared key the
 token is the only thing separating one person's memory from another's, and a
 header that re-points the namespace would undo exactly that. This is the
 namespace authorization the note above calls for, in the one case where the hook

@@ -511,7 +511,9 @@ def _forwarded_identity(headers: dict, valid_at: Optional[float] = None):
     Returns None when the feature is off or no token is present, so the caller
     falls back to the virtual key. Raises when a token is present but not good:
     a request that tried to prove an identity and failed must not be quietly
-    downgraded to whatever the shared key says.
+    downgraded to whatever the shared key says. Also raises when a good token
+    arrives with a namespace selector, so every caller that verifies the token
+    enforces that rule too, including the pre-call hook's early check.
     """
     if not FORWARD_USER_INFO_HEADER_JWT_SECRET:
         return None
@@ -560,6 +562,21 @@ def _forwarded_identity(headers: dict, valid_at: Optional[float] = None):
         raise _unauthorized(
             f"{FORWARDED_USER_JWT_HEADER} carries no email claim"
         )
+
+    # Here the namespace IS the identity. Verifying who the caller is and then
+    # letting a header say which memories to read gives back exactly what the
+    # signature was introduced to take away: one header, plus a valid token of
+    # your own, reads a colleague's memories. Refuse rather than ignore — a
+    # caller sending these is either misconfigured or probing, and both should
+    # be visible.
+    for name in ("x-memmachine-org", "x-memmachine-project"):
+        # A blank value means "not selected", as on the virtual-key path.
+        if str(_header(headers, name) or "").strip():
+            raise _unauthorized(
+                f"{name} is not accepted on a request identified by "
+                f"{FORWARDED_USER_JWT_HEADER}: the namespace is derived from the "
+                "verified user identity"
+            )
     return str(email).strip()
 
 
@@ -603,21 +620,7 @@ def _identity(data, user_api_key_dict=None, valid_at=None):
     user_id = _to_org_id(str(user_email).strip())
 
     if forwarded_email:
-        # Here the namespace IS the identity. Verifying who the caller is and then
-        # letting a header say which memories to read gives back exactly what the
-        # signature was introduced to take away: one header, plus a valid token of
-        # your own, reads a colleague's memories. Refuse rather than ignore — a
-        # caller sending these is either misconfigured or probing, and both should
-        # be visible.
-        for name in ("x-memmachine-org", "x-memmachine-project"):
-            # Truthiness, not presence: an empty value means "not selected",
-            # exactly as on the virtual-key path below.
-            if _header(headers, name):
-                raise _unauthorized(
-                    f"{name} is not accepted on a request identified by "
-                    f"{FORWARDED_USER_JWT_HEADER}: the namespace is derived from the "
-                    "verified user identity"
-                )
+        # _forwarded_identity has already refused x-memmachine-org/-project here.
         org_id, project_id = user_id, PROJECT_ID
     else:
         org_id = str(_header(headers, "x-memmachine-org") or user_id).strip()
@@ -716,8 +719,9 @@ class MemMachineHook(CustomLogger):
             return data
 
         # Verify a forwarded token before any of the early returns below, so a
-        # forged or expired one is refused even on a request that would not have
-        # searched memory. _identity checks it again; that is cheap.
+        # forged or expired one, or a good one sent with a namespace selector, is
+        # refused even on a request that would not have searched memory.
+        # _identity checks it again; that is cheap.
         _forwarded_identity(_request_headers(data))
 
         # /v1/responses carries the conversation as `input` (string or list of
