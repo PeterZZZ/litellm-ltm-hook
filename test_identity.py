@@ -336,6 +336,47 @@ class TestPreCallRefusesBeforeEarlyReturns:
         assert out is data
 
 
+class TestConfigurationFaultsAreNotTokenFaults:
+    """A fault in the deployment must not be reported as a fault in the token."""
+
+    def _import_with(self, **env):
+        import subprocess, sys
+        full = dict(os.environ, MEMMACHINE_BASE_URL="http://memmachine.unit.test", **env)
+        if "FORWARD_USER_INFO_HEADER_JWT_SECRET" not in env:
+            full.pop("FORWARD_USER_INFO_HEADER_JWT_SECRET", None)
+        return subprocess.run([sys.executable, "-c", "import memmachine_hook"],
+                              env=full, capture_output=True, text=True)
+
+    def test_bad_leeway_does_not_touch_a_deployment_not_using_this(self):
+        """With the secret unset, nothing in this feature may affect loading."""
+        done = self._import_with(MEMMACHINE_FORWARDED_USER_JWT_LEEWAY="30s")
+        assert done.returncode == 0, done.stderr[-400:]
+
+    def test_bad_leeway_is_refused_when_the_feature_is_on(self):
+        done = self._import_with(FORWARD_USER_INFO_HEADER_JWT_SECRET=SECRET,
+                                 MEMMACHINE_FORWARDED_USER_JWT_LEEWAY="30s")
+        assert done.returncode != 0
+        assert "whole number of seconds" in done.stderr
+
+    def test_a_non_pyjwt_failure_is_not_reported_as_a_bad_token(self, signing, monkeypatch):
+        """A wrong argument or a shadowed package is a server error, not a 401.
+
+        Reporting it as a bad token would turn a broken install into a 401 on
+        every request, which looks like an auth problem and is not one.
+        """
+        class Shadowed:
+            PyJWTError = jwt.PyJWTError
+
+            @staticmethod
+            def decode(*args, **kwargs):
+                raise TypeError("decode() got an unexpected keyword argument")
+
+        monkeypatch.setattr(h, "jwt", Shadowed)
+        data, key = request({"x-openwebui-user-jwt": token()})
+        with pytest.raises(TypeError):
+            h._identity(data, key)
+
+
 class TestStorePathLogsAnAuthFailure:
     def test_bad_token_is_logged_as_authentication(self, signing, monkeypatch):
         records = []

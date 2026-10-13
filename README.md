@@ -157,7 +157,10 @@ rather than by the virtual key. The signature, the `iss` claim and the expiry ar
 all checked, and `HS256` is pinned so a token declaring `alg: none` is refused. A
 token that is present but does not verify fails the request with **401**, on
 every route and even when the request would not have searched memory; it is
-never quietly downgraded to the shared key's identity. The store path runs after
+never quietly downgraded to the shared key's identity. This applies to requests the hook acts on. A request it skips —
+`x-memmachine-disable: 1`, or a model outside `MEMMACHINE_MODEL_PREFIX` — is
+not inspected at all, so a bad token on one is neither rejected nor able to
+reach any memory. The store path runs after
 the model has answered, so the expiry is judged against the moment the request
 started rather than the moment the memory is written.
 

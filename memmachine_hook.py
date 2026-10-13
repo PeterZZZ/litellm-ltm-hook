@@ -100,7 +100,6 @@ import logging
 import os
 import re
 import sys
-import time
 from pathlib import Path
 from typing import Optional
 
@@ -182,14 +181,31 @@ FORWARDED_USER_JWT_ISSUER = os.environ.get(
 # without a margin, an Open WebUI host a couple of seconds ahead makes PyJWT
 # raise ImmatureSignatureError on every single request, which reads like a bad
 # secret rather than a clock. The margin applies to iat, nbf and exp alike.
-try:
-    FORWARDED_USER_JWT_LEEWAY = max(
-        0, int(os.environ.get("MEMMACHINE_FORWARDED_USER_JWT_LEEWAY", "30"))
-    )
-except ValueError:
+# Read only when the feature is on. A malformed value is worth refusing to
+# start over, but not for a deployment that never asked for this: with the
+# secret unset, nothing here may change how the hook loads.
+FORWARDED_USER_JWT_LEEWAY = 30
+if FORWARD_USER_INFO_HEADER_JWT_SECRET:
+    try:
+        FORWARDED_USER_JWT_LEEWAY = max(
+            0, int(os.environ.get("MEMMACHINE_FORWARDED_USER_JWT_LEEWAY", "30"))
+        )
+    except ValueError:
+        raise RuntimeError(
+            "MEMMACHINE_FORWARDED_USER_JWT_LEEWAY must be a whole number of seconds"
+        ) from None
+
+if FORWARD_USER_INFO_HEADER_JWT_SECRET and jwt is not None and not hasattr(
+    jwt, "PyJWTError"
+):
+    # `jwt` is also the name of an unrelated package on PyPI. Importing that one
+    # gives a module with a different decode signature, which would fail inside
+    # every verification and turn every request into a 401 that looks like a bad
+    # token. Say so once, at startup, instead.
     raise RuntimeError(
-        "MEMMACHINE_FORWARDED_USER_JWT_LEEWAY must be a whole number of seconds"
-    ) from None
+        "The installed `jwt` module is not PyJWT (it has no PyJWTError). Another "
+        "package of that name is shadowing it; install pyjwt and remove the other."
+    )
 
 if FORWARD_USER_INFO_HEADER_JWT_SECRET and jwt is None:
     raise RuntimeError(
@@ -467,7 +483,7 @@ def _header(headers: dict, name: str):
 
 
 def _unauthorized(message: str) -> MemMachineRequestError:
-    """A refusal to trust the caller's identity: 401 on every route.
+    """A refusal to trust the caller's identity: 401 on every route it acts on.
 
     MemMachineRequestError rather than FastAPI's HTTPException, for the reason
     DEV.md gives: LiteLLM keeps its status_code on all three routes, and it does
@@ -517,7 +533,11 @@ def _forwarded_identity(headers: dict, valid_at: Optional[float] = None):
             leeway=FORWARDED_USER_JWT_LEEWAY,
             options=options,
         )
-    except Exception as exc:
+    except jwt.PyJWTError as exc:
+        # Only PyJWT's own errors mean the token is not good. Anything else — a
+        # wrong argument, a shadowed package, a broken install — is ours, and is
+        # left to surface as the server error it is rather than being reported
+        # to the caller as a bad token.
         raise _unauthorized(
             f"{FORWARDED_USER_JWT_HEADER} could not be verified: {type(exc).__name__}"
         ) from exc
@@ -616,6 +636,12 @@ def _identity(data, user_api_key_dict=None, valid_at=None):
 
 
 def _in_scope(data) -> bool:
+    """Whether the memory layer touches this request at all.
+
+    Checked before identity is resolved, so a request the hook skips never has
+    its token verified. That costs nothing: skipping means no search and no
+    store, so there is no namespace an unverified token could reach.
+    """
     if _header(_request_headers(data), "x-memmachine-disable") == "1":
         return False
     model = data.get("model")
