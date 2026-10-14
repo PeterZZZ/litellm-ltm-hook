@@ -87,6 +87,7 @@ A key may be given raw or as LiteLLM's SHA-256.
 ```bash
 uv sync --group platform
 MOCK_PLATFORM_DB=registry.sqlite MOCK_PLATFORM_CORE_URL=http://127.0.0.1:8090 \
+MOCK_PLATFORM_OWUI_URL=http://127.0.0.1:8080 \
   uv run uvicorn mock_platform.app:app --port 8100
 ```
 
@@ -103,6 +104,31 @@ Open WebUI is unchanged: `ENABLE_FORWARD_USER_INFO_HEADERS=true` and its
 `FORWARD_USER_INFO_HEADER_JWT_SECRET`, which goes to the platform (`key app
 --secret-env`) instead of to LiteLLM.
 
+## My Memory portal
+
+With `MOCK_PLATFORM_OWUI_URL` set, the platform also serves a page at
+`/portal/` where a person sees and manages their own memory:
+
+- **Sign in with the Open WebUI account.** The email and password go to Open
+  WebUI's own sign-in endpoint and are never stored; its answer is the proof of
+  identity, mapped through the registry like a chat token's email.
+- **Your space:** the namespace, how many conversations are remembered, where
+  memory is used from (the Open WebUI app, personal keys), and an on/off switch.
+  Off is the registry's `enabled` flag, so chats keep working without memory.
+- **Memories:** each stored user message paired with its reply, newest first,
+  filterable by source, searchable, deletable one by one or in bulk; add a
+  memory by hand. Open WebUI's background prompts (chat titles, tags) are
+  flagged as automatic and can be removed in one click.
+- **What would it recall?** runs the same search the hook runs before a chat
+  and shows what would be put in the prompt, with scores.
+- **Settings:** export everything as JSON; delete everything.
+- Someone not yet enrolled can turn memory on for themselves.
+
+Every route acts on the signed-in person's namespace, taken from the registry,
+never from the browser; deletes re-check each id against that namespace first.
+Sessions live in memory (a restart signs everyone out) in an HttpOnly,
+SameSite=Strict cookie, and writes also need an `X-MM-Portal` header.
+
 ## What a mock leaves out
 
 - **Core is still reachable directly.** The platform only helps if core accepts
@@ -111,4 +137,5 @@ Open WebUI is unchanged: `ENABLE_FORWARD_USER_INFO_HEADERS=true` and its
   keeps it in a secret store.
 - **Disabling is judged when each call arrives.** A store that lands after a
   person is re-enabled is stored.
-- **No console, no shared namespaces, one namespace per person.**
+- **No admin console** (the CLI stands in), no shared namespaces, one namespace per person.
+- **The portal has no rate limiting** beyond a short delay after a failed sign-in.

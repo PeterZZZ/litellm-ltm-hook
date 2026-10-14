@@ -141,6 +141,16 @@ class Registry:
         ).fetchone()
         return _user(row)
 
+    def personal_keys(self, user_id: str) -> list[Key]:
+        rows = self._db.execute(
+            "SELECT * FROM keys WHERE kind = 'personal' AND user_id = ? ORDER BY label", (user_id,)
+        ).fetchall()
+        return [Key(**dict(r)) for r in rows]
+
+    def app_labels(self) -> list[str]:
+        return [r["label"] for r in self._db.execute(
+            "SELECT label FROM keys WHERE kind = 'app' ORDER BY label")]
+
     # ---- writes, used by the admin CLI ----
 
     def add_service(self, label: str) -> str:

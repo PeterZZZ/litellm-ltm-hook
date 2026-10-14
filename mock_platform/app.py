@@ -43,7 +43,9 @@ def create_app(
     *,
     timeout: float = 60.0,
     transport: Optional[httpx.AsyncBaseTransport] = None,
+    owui_url: Optional[str] = None,
 ) -> FastAPI:
+    """The platform API; with `owui_url`, also the My Memory portal at /portal/."""
     app = FastAPI(title="MemMachine mock platform", docs_url=None, redoc_url=None)
     core_url = core_url.rstrip("/")
     known_projects: set[tuple[str, str]] = set()
@@ -103,6 +105,9 @@ def create_app(
                 m["producer"] = user.user_id
             meta = dict(m.get("metadata") or {})
             meta["user_id"] = user.user_id
+            # Where the memory came from, for the person reviewing it later.
+            meta["via"] = principal.via
+            meta["source"] = principal.key_label
             if not meta.get("session_id") or meta.get("session_id") == "default":
                 meta["session_id"] = user.user_id
             m["metadata"] = meta
@@ -132,6 +137,11 @@ def create_app(
         # 409: it already exists. Anything else is left for the store to report.
         if resp.status_code in (200, 201, 409):
             known_projects.add((org_id, project_id))
+
+    if owui_url:
+        from .portal import mount_portal
+
+        mount_portal(app, registry, core_url, owui_url, client)
 
     return app
 
@@ -165,7 +175,10 @@ def _from_env() -> FastAPI:
     if not db or not core:
         raise RuntimeError("MOCK_PLATFORM_DB and MOCK_PLATFORM_CORE_URL are required")
     return create_app(
-        Registry(db), core, timeout=float(os.environ.get("MOCK_PLATFORM_CORE_TIMEOUT", "60"))
+        Registry(db),
+        core,
+        timeout=float(os.environ.get("MOCK_PLATFORM_CORE_TIMEOUT", "60")),
+        owui_url=os.environ.get("MOCK_PLATFORM_OWUI_URL") or None,
     )
 
 

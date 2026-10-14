@@ -1,0 +1,723 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>My Memory</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%235b5bd6'/%3E%3Cpath d='M9 21V11l7 6 7-6v10' stroke='white' stroke-width='2.6' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
+<style>
+:root{
+  --bg:#f6f6f9; --panel:#ffffff; --panel-2:#fafafc; --ink:#17171c; --ink-2:#4a4a57; --ink-3:#7c7c8a;
+  --line:#e6e6ee; --line-2:#d9d9e3; --accent:#5b5bd6; --accent-ink:#ffffff; --accent-soft:#ededfc;
+  --good:#1f8a5b; --good-soft:#e5f5ed; --warn:#a15c00; --warn-soft:#fdf1e0; --bad:#c2372f; --bad-soft:#fdeceb;
+  --shadow:0 1px 2px rgba(20,20,40,.05),0 4px 16px rgba(20,20,40,.05);
+  --r:14px; --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+}
+@media (prefers-color-scheme:dark){:root{
+  --bg:#111116; --panel:#1a1a21; --panel-2:#1f1f27; --ink:#ececf2; --ink-2:#b6b6c4; --ink-3:#8a8a99;
+  --line:#2b2b35; --line-2:#363643; --accent:#8b8bf0; --accent-ink:#111116; --accent-soft:#24243a;
+  --good:#4cc38a; --good-soft:#15291f; --warn:#e3a14a; --warn-soft:#2c2112; --bad:#f07068; --bad-soft:#2e1716;
+  --shadow:0 1px 2px rgba(0,0,0,.3),0 6px 20px rgba(0,0,0,.25);
+}}
+*{box-sizing:border-box}
+html,body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.5 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;-webkit-font-smoothing:antialiased}
+button,input,textarea{font:inherit;color:inherit}
+.hidden{display:none!important}
+.wrap{max-width:1000px;margin:0 auto;padding:0 20px}
+header{position:sticky;top:0;z-index:5;background:color-mix(in srgb,var(--bg) 88%,transparent);backdrop-filter:blur(10px);border-bottom:1px solid var(--line)}
+header .wrap{display:flex;align-items:center;gap:12px;height:60px}
+.brand{display:flex;align-items:center;gap:10px;font-weight:650;letter-spacing:-.01em}
+.mark{width:28px;height:28px;border-radius:8px;background:var(--accent);display:grid;place-items:center}
+.mark svg{width:16px;height:16px}
+.brand small{font-weight:500;color:var(--ink-3)}
+.spacer{flex:1}
+.who{display:flex;align-items:center;gap:10px;color:var(--ink-2);font-size:14px}
+.avatar{width:30px;height:30px;border-radius:50%;background:var(--accent-soft);color:var(--accent);display:grid;place-items:center;font-weight:650;font-size:13px}
+.btn{border:1px solid var(--line-2);background:var(--panel);border-radius:10px;padding:8px 14px;cursor:pointer;display:inline-flex;align-items:center;gap:8px;white-space:nowrap;transition:background .15s,border-color .15s}
+.btn:hover{border-color:var(--ink-3)}
+.btn.primary{background:var(--accent);border-color:var(--accent);color:var(--accent-ink);font-weight:600}
+.btn.primary:hover{filter:brightness(1.07)}
+.btn.ghost{border-color:transparent;background:transparent;color:var(--ink-2)}
+.btn.ghost:hover{background:var(--panel-2)}
+.btn.danger{color:var(--bad);border-color:color-mix(in srgb,var(--bad) 40%,var(--line))}
+.btn.danger.solid{background:var(--bad);color:#fff;border-color:var(--bad)}
+.btn:disabled{opacity:.5;cursor:not-allowed}
+.btn svg{width:16px;height:16px}
+a.btn{text-decoration:none;color:inherit}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:var(--r);box-shadow:var(--shadow)}
+main{padding:28px 0 80px}
+
+/* sign in */
+.center{min-height:calc(100vh - 60px);display:grid;place-items:center;padding:24px}
+.login{width:100%;max-width:400px;padding:32px}
+.login h1{margin:0 0 6px;font-size:22px;letter-spacing:-.02em}
+.login p.lead{margin:0 0 22px;color:var(--ink-2)}
+label.f{display:block;font-size:13px;font-weight:600;color:var(--ink-2);margin:14px 0 6px}
+input.t,textarea.t{width:100%;padding:10px 12px;border:1px solid var(--line-2);border-radius:10px;background:var(--panel-2);outline:none;transition:border-color .15s,box-shadow .15s}
+input.t:focus,textarea.t:focus{border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-soft)}
+.login .btn.primary{width:100%;justify-content:center;margin-top:20px;padding:11px}
+.err{color:var(--bad);font-size:14px;margin-top:12px;min-height:20px}
+.fine{font-size:12.5px;color:var(--ink-3);margin-top:18px;display:flex;gap:8px;align-items:flex-start}
+.fine svg{flex:none;width:14px;height:14px;margin-top:2px}
+
+/* space card */
+.space{padding:24px;display:grid;grid-template-columns:1fr auto;gap:24px;align-items:center}
+.eyebrow{font-size:12px;font-weight:650;text-transform:uppercase;letter-spacing:.06em;color:var(--ink-3)}
+.space h2{margin:4px 0 10px;font-size:24px;letter-spacing:-.02em;display:flex;align-items:center;gap:10px}
+.ns{font-family:var(--mono);font-size:13px;background:var(--panel-2);border:1px solid var(--line);padding:4px 10px;border-radius:8px;color:var(--ink-2);display:inline-flex;align-items:center;gap:8px;cursor:pointer}
+.ns:hover{border-color:var(--line-2)}
+.ns svg{width:13px;height:13px;color:var(--ink-3)}
+.stats{display:flex;flex-wrap:wrap;gap:8px 22px;margin-top:16px;color:var(--ink-2);font-size:14px}
+.stats b{color:var(--ink);font-weight:650}
+.switch{display:flex;align-items:center;gap:14px;padding:14px 18px;border-radius:12px;background:var(--panel-2);border:1px solid var(--line);cursor:pointer;user-select:none;min-width:280px}
+.switch .txt{flex:1}
+.switch .st{font-weight:650}
+.switch .sub{font-size:12.5px;color:var(--ink-3);max-width:230px}
+.tog{width:46px;height:26px;border-radius:13px;background:var(--line-2);position:relative;flex:none;transition:background .2s}
+.tog::after{content:"";position:absolute;top:3px;left:3px;width:20px;height:20px;border-radius:50%;background:#fff;box-shadow:0 1px 3px rgba(0,0,0,.25);transition:left .2s}
+.switch.on .tog{background:var(--good)}
+.switch.on .tog::after{left:23px}
+.switch.on .st{color:var(--good)}
+
+/* tabs */
+.tabs{display:flex;gap:4px;margin:28px 0 18px;border-bottom:1px solid var(--line);overflow-x:auto;scrollbar-width:none}
+.tab{white-space:nowrap;flex:none;border:none;background:none;padding:10px 14px;cursor:pointer;color:var(--ink-3);font-weight:600;border-bottom:2px solid transparent;margin-bottom:-1px;display:flex;gap:8px;align-items:center}
+.tab:hover{color:var(--ink-2)}
+.tab.on{color:var(--ink);border-bottom-color:var(--accent)}
+.count{font-size:12px;background:var(--panel-2);border:1px solid var(--line);padding:0 7px;border-radius:999px;color:var(--ink-3);font-weight:600}
+
+/* toolbar */
+.toolbar{display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin-bottom:14px}
+.search{position:relative;flex:1;min-width:220px}
+.search svg{position:absolute;left:12px;top:50%;transform:translateY(-50%);width:16px;height:16px;color:var(--ink-3)}
+.search input{padding-left:36px}
+.chips{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:16px}
+.chip{border:1px solid var(--line-2);background:var(--panel);border-radius:999px;padding:4px 12px;font-size:13px;cursor:pointer;color:var(--ink-2)}
+.chip.on{background:var(--ink);color:var(--bg);border-color:var(--ink)}
+.chip .n{opacity:.6;margin-left:4px}
+
+.banner{display:flex;gap:12px;align-items:center;padding:12px 16px;border-radius:12px;background:var(--warn-soft);color:var(--warn);margin-bottom:16px;font-size:14px}
+.banner svg{flex:none;width:18px;height:18px}
+.banner .btn{margin-left:auto;background:transparent;border-color:currentColor;color:inherit;padding:5px 12px;font-size:13px}
+
+.day{font-size:12px;font-weight:650;color:var(--ink-3);text-transform:uppercase;letter-spacing:.06em;margin:22px 0 8px}
+.turn{padding:14px 16px;display:grid;grid-template-columns:auto 1fr auto;gap:12px;margin-bottom:8px;transition:border-color .15s}
+.turn:hover{border-color:var(--line-2)}
+.turn .sel{display:none;padding-top:2px}
+.selecting .turn .sel{display:block}
+.turn input[type=checkbox]{width:16px;height:16px;accent-color:var(--accent)}
+.line{display:grid;grid-template-columns:22px 1fr;gap:8px;align-items:start}
+.line+.line{margin-top:8px}
+.who-ic{width:22px;height:22px;border-radius:50%;display:grid;place-items:center;font-size:10px;font-weight:700}
+.who-ic.you{background:var(--accent-soft);color:var(--accent)}
+.who-ic.ai{background:var(--panel-2);color:var(--ink-3);border:1px solid var(--line);font-size:9.5px}
+.msg{white-space:pre-wrap;word-break:break-word}
+.msg.you{color:var(--ink)}
+.msg.ai{color:var(--ink-2);font-size:14px}
+.clamp3{display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden}
+.clamp2{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+.more{border:none;background:none;color:var(--accent);padding:0;cursor:pointer;font-size:13px;margin-top:2px}
+.meta{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:10px;font-size:12.5px;color:var(--ink-3)}
+.badge{border:1px solid var(--line);border-radius:6px;padding:0 7px;background:var(--panel-2)}
+.badge.auto{color:var(--warn);background:var(--warn-soft);border-color:transparent}
+.badge.mine{color:var(--good);background:var(--good-soft);border-color:transparent}
+.acts{display:flex;align-items:flex-start;gap:4px;opacity:.45;transition:opacity .15s}
+.turn:hover .acts{opacity:1}
+.icon-btn{border:none;background:none;border-radius:8px;width:32px;height:32px;display:grid;place-items:center;cursor:pointer;color:var(--ink-3)}
+.icon-btn:hover{background:var(--bad-soft);color:var(--bad)}
+.icon-btn svg{width:16px;height:16px}
+.confirm{display:flex;gap:6px;align-items:center;font-size:13px;color:var(--bad)}
+.confirm .btn{padding:4px 10px;font-size:13px}
+
+.empty{text-align:center;padding:56px 20px;color:var(--ink-3)}
+.empty svg{width:44px;height:44px;opacity:.5;margin-bottom:10px}
+.empty h3{color:var(--ink-2);margin:0 0 4px;font-size:16px}
+
+.selbar{position:sticky;bottom:18px;margin-top:16px;display:flex;align-items:center;gap:12px;padding:10px 12px 10px 18px;background:var(--ink);color:var(--bg);border-radius:12px;box-shadow:var(--shadow)}
+.selbar .btn{background:transparent;color:inherit;border-color:color-mix(in srgb,var(--bg) 30%,transparent)}
+.selbar .btn.danger.solid{background:var(--bad);border-color:var(--bad);color:#fff}
+
+/* recall */
+.recall-intro{color:var(--ink-2);margin:0 0 14px;max-width:640px}
+.hit{padding:14px 16px;margin-bottom:8px;display:grid;grid-template-columns:64px 1fr auto;gap:14px;align-items:start}
+.score{font-family:var(--mono);font-size:12px;color:var(--ink-3)}
+.bar{height:5px;border-radius:3px;background:var(--line);margin-top:6px;overflow:hidden}
+.bar i{display:block;height:100%;background:var(--accent);border-radius:3px}
+.prompt-preview{margin-top:18px;padding:14px 16px;font-family:var(--mono);font-size:12.5px;white-space:pre-wrap;color:var(--ink-2);background:var(--panel-2);border:1px dashed var(--line-2);border-radius:12px}
+
+/* settings */
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+.sec{padding:20px 22px}
+.sec h3{margin:0 0 4px;font-size:16px}
+.sec p{margin:0 0 14px;color:var(--ink-2);font-size:14px}
+dl.kv{display:grid;grid-template-columns:auto 1fr;gap:8px 18px;margin:0;font-size:14px}
+dl.kv dt{color:var(--ink-3)}
+dl.kv dd{margin:0;word-break:break-all}
+dl.kv code{font-family:var(--mono);font-size:13px}
+.access{display:flex;flex-direction:column;gap:10px}
+.acc{display:flex;gap:12px;align-items:center}
+.acc .ic{width:34px;height:34px;border-radius:10px;background:var(--panel-2);border:1px solid var(--line);display:grid;place-items:center;color:var(--ink-2)}
+.acc .ic svg{width:17px;height:17px}
+.acc small{display:block;color:var(--ink-3);font-family:var(--mono);font-size:12px}
+.dz{border-color:color-mix(in srgb,var(--bad) 35%,var(--line))}
+.dz h3{color:var(--bad)}
+
+/* dialog + toast */
+dialog{border:none;border-radius:16px;padding:0;background:var(--panel);color:var(--ink);box-shadow:0 20px 60px rgba(0,0,0,.3);width:min(520px,calc(100vw - 32px))}
+dialog::backdrop{background:rgba(10,10,20,.45)}
+.dlg{padding:24px}
+.dlg h3{margin:0 0 6px;font-size:18px}
+.dlg p{margin:0 0 14px;color:var(--ink-2);font-size:14px}
+.dlg .row{display:flex;justify-content:flex-end;gap:8px;margin-top:16px}
+.toast{position:fixed;left:50%;bottom:24px;transform:translateX(-50%) translateY(20px);background:var(--ink);color:var(--bg);padding:10px 16px;border-radius:10px;font-size:14px;opacity:0;transition:all .25s;pointer-events:none;z-index:50}
+.toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
+.spin{width:18px;height:18px;border:2px solid var(--line-2);border-top-color:var(--accent);border-radius:50%;animation:s .7s linear infinite;display:inline-block}
+@keyframes s{to{transform:rotate(360deg)}}
+.loading{display:flex;justify-content:center;padding:48px}
+
+@media (max-width:760px){
+  .space{grid-template-columns:1fr}
+  .switch{min-width:0}
+  .grid2{grid-template-columns:1fr}
+  .who .name{display:none}
+  .brand small{display:none}
+  .wrap{padding:0 16px}
+  .space{padding:20px}
+  .hit{grid-template-columns:1fr}
+}
+</style>
+</head>
+<body>
+
+<header>
+  <div class="wrap">
+    <div class="brand">
+      <div class="mark"><svg viewBox="0 0 16 16" fill="none" stroke="#fff" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3.5 12V4.5l4.5 4 4.5-4V12"/></svg></div>
+      My Memory <small>· MemMachine</small>
+    </div>
+    <div class="spacer"></div>
+    <div class="who hidden" id="who">
+      <span class="name" id="who-name"></span>
+      <div class="avatar" id="who-av"></div>
+      <button class="btn ghost" id="logout">Sign out</button>
+    </div>
+  </div>
+</header>
+
+<!-- sign in -->
+<section id="v-login" class="center hidden">
+  <form class="card login" id="login-form" autocomplete="on">
+    <h1>Sign in</h1>
+    <p class="lead">Use your Open WebUI account to see what your assistant remembers about you.</p>
+    <label class="f" for="email">Email</label>
+    <input class="t" id="email" type="email" autocomplete="username" required autofocus>
+    <label class="f" for="password">Password</label>
+    <input class="t" id="password" type="password" autocomplete="current-password" required>
+    <button class="btn primary" type="submit" id="login-btn">Sign in</button>
+    <div class="err" id="login-err"></div>
+    <div class="fine">
+      <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="3" y="7" width="10" height="7" rx="1.5"/><path d="M5.5 7V5a2.5 2.5 0 015 0v2"/></svg>
+      <span>Your password is checked by Open WebUI and never stored here. You only ever see your own memory.</span>
+    </div>
+  </form>
+</section>
+
+<!-- not enrolled -->
+<section id="v-enroll" class="center hidden">
+  <div class="card login" style="max-width:460px">
+    <div class="eyebrow">Memory</div>
+    <h1 style="margin-top:6px">Memory isn't on for you yet</h1>
+    <p class="lead">When it's on, chats that use a <code>memmachine-</code> model remember what you tell them, and recall it in later conversations. You can see, edit, export or delete everything here, and turn it off at any time.</p>
+    <button class="btn primary" id="enroll-btn" style="width:100%;justify-content:center;padding:11px">Turn on memory</button>
+  </div>
+</section>
+
+<!-- main -->
+<main id="v-main" class="hidden">
+  <div class="wrap">
+
+    <section class="card space">
+      <div>
+        <div class="eyebrow">Your memory space</div>
+        <h2><span id="space-kind">Personal</span></h2>
+        <span class="ns" id="ns" title="Copy namespace">
+          <span id="ns-text"></span>
+          <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="5" y="5" width="8" height="9" rx="1.5"/><path d="M3 11V3.5A1.5 1.5 0 014.5 2H10"/></svg>
+        </span>
+        <div class="stats">
+          <span><b id="st-turns">0</b> conversations remembered</span>
+          <span id="st-last"></span>
+          <span id="st-from"></span>
+        </div>
+      </div>
+      <div class="switch" id="switch" role="switch" tabindex="0" aria-checked="true">
+        <div class="txt">
+          <div class="st" id="sw-state">Memory on</div>
+          <div class="sub" id="sw-sub"></div>
+        </div>
+        <div class="tog"></div>
+      </div>
+    </section>
+
+    <nav class="tabs" role="tablist">
+      <button class="tab on" data-tab="memories">Memories <span class="count" id="tab-count">0</span></button>
+      <button class="tab" data-tab="recall">What would it recall?</button>
+      <button class="tab" data-tab="settings">Settings</button>
+    </nav>
+
+    <!-- memories -->
+    <section id="t-memories">
+      <div class="toolbar">
+        <div class="search">
+          <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="7" cy="7" r="4.5"/><path d="M10.5 10.5L14 14" stroke-linecap="round"/></svg>
+          <input class="t" id="filter" placeholder="Search your memories…">
+        </div>
+        <button class="btn" id="select-btn">Select</button>
+        <button class="btn primary" id="add-btn">
+          <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M8 3v10M3 8h10"/></svg>
+          Add a memory
+        </button>
+      </div>
+      <div class="chips" id="chips"></div>
+      <div class="banner hidden" id="auto-banner">
+        <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="8" cy="8" r="6"/><path d="M8 5v3.5M8 11h.01" stroke-linecap="round"/></svg>
+        <span id="auto-text"></span>
+        <button class="btn" id="auto-clean">Remove them</button>
+      </div>
+      <div id="list"></div>
+      <div class="selbar hidden" id="selbar">
+        <span id="sel-n">0 selected</span>
+        <div class="spacer"></div>
+        <button class="btn" id="sel-all">Select all shown</button>
+        <button class="btn" id="sel-cancel">Cancel</button>
+        <button class="btn danger solid" id="sel-del">Delete</button>
+      </div>
+    </section>
+
+    <!-- recall -->
+    <section id="t-recall" class="hidden">
+      <p class="recall-intro">Type something as if you were starting a chat. You'll see exactly which memories the assistant would be given before it answers — the same lookup that runs on every chat turn.</p>
+      <form class="toolbar" id="recall-form">
+        <div class="search">
+          <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="7" cy="7" r="4.5"/><path d="M10.5 10.5L14 14" stroke-linecap="round"/></svg>
+          <input class="t" id="recall-q" placeholder="e.g. What bike do I ride?">
+        </div>
+        <button class="btn primary" type="submit">Look up</button>
+      </form>
+      <div id="recall-out"></div>
+    </section>
+
+    <!-- settings -->
+    <section id="t-settings" class="hidden">
+      <div class="grid2">
+        <div class="card sec">
+          <h3>Memory space</h3>
+          <p>Where your memories are kept. For now everyone has one personal space.</p>
+          <dl class="kv">
+            <dt>Type</dt><dd>Personal — only you</dd>
+            <dt>Owner</dt><dd id="kv-owner"></dd>
+            <dt>Organization</dt><dd><code id="kv-org"></code></dd>
+            <dt>Project</dt><dd><code id="kv-proj"></code></dd>
+            <dt>Stored messages</dt><dd id="kv-eps"></dd>
+          </dl>
+        </div>
+        <div class="card sec">
+          <h3>Where your memory is used</h3>
+          <p>Requests from these places can recall and save to this space.</p>
+          <div class="access" id="access"></div>
+        </div>
+        <div class="card sec">
+          <h3>Your data</h3>
+          <p>Download everything in this space as JSON.</p>
+          <a class="btn" href="/portal/api/export" download>
+            <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M8 2.5v8M4.5 7L8 10.5 11.5 7M3 13.5h10"/></svg>
+            Export memories
+          </a>
+        </div>
+        <div class="card sec dz">
+          <h3>Delete all memories</h3>
+          <p>Permanently removes every memory in this space. Chats keep working; the assistant just starts fresh.</p>
+          <button class="btn danger" id="clear-btn">Delete everything…</button>
+        </div>
+      </div>
+    </section>
+  </div>
+</main>
+
+<div class="loading hidden" id="v-loading"><span class="spin"></span></div>
+
+<dialog id="dlg-add">
+  <form class="dlg" method="dialog" id="add-form">
+    <h3>Add a memory</h3>
+    <p>Write it the way you'd tell a colleague. The assistant will recall it in future chats.</p>
+    <textarea class="t" id="add-text" rows="4" maxlength="4000" placeholder="I prefer metric units and short answers."></textarea>
+    <div class="row">
+      <button class="btn" value="cancel" formnovalidate>Cancel</button>
+      <button class="btn primary" id="add-save" value="save">Remember this</button>
+    </div>
+  </form>
+</dialog>
+
+<dialog id="dlg-clear">
+  <form class="dlg" method="dialog" id="clear-form">
+    <h3>Delete all memories?</h3>
+    <p>This removes <b id="clear-n"></b> entries and can't be undone. Type <b>delete</b> to confirm.</p>
+    <input class="t" id="clear-confirm" autocomplete="off">
+    <div class="row">
+      <button class="btn" value="cancel" formnovalidate>Cancel</button>
+      <button class="btn danger solid" id="clear-go" value="go" disabled>Delete everything</button>
+    </div>
+  </form>
+</dialog>
+
+<div class="toast" id="toast"></div>
+
+<script>
+"use strict";
+const $ = (s, r = document) => r.querySelector(s);
+const $$ = (s, r = document) => [...r.querySelectorAll(s)];
+
+/* Build DOM safely: every string becomes a text node, never HTML. */
+function h(tag, attrs = {}, ...kids) {
+  const el = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs || {})) {
+    if (v == null || v === false) continue;
+    if (k === "class") el.className = v;
+    else if (k.startsWith("on")) el.addEventListener(k.slice(2), v);
+    else el.setAttribute(k, v === true ? "" : v);
+  }
+  for (const kid of kids.flat()) {
+    if (kid == null || kid === false) continue;
+    el.append(kid instanceof Node ? kid : document.createTextNode(String(kid)));
+  }
+  return el;
+}
+const svg = (d, w = 16) => {
+  const s = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  s.setAttribute("viewBox", "0 0 16 16"); s.setAttribute("fill", "none");
+  s.setAttribute("stroke", "currentColor"); s.setAttribute("stroke-width", "1.6");
+  s.setAttribute("stroke-linecap", "round"); s.setAttribute("stroke-linejoin", "round");
+  s.innerHTML = d; return s;
+};
+const ICON = {
+  trash: '<path d="M3 4.5h10M6.5 4.5V3h3v1.5M4.5 4.5l.6 8.5h5.8l.6-8.5"/>',
+  chat: '<path d="M2.5 4a1.5 1.5 0 011.5-1.5h8A1.5 1.5 0 0113.5 4v5.5A1.5 1.5 0 0112 11H7l-3 2.5V11a1.5 1.5 0 01-1.5-1.5z"/>',
+  key: '<circle cx="5.5" cy="10.5" r="2.5"/><path d="M7.3 8.7L13 3M11 5l1.5 1.5"/>',
+  brain: '<path d="M8 3v10M5.5 3.5a2 2 0 00-2 2v.5a2 2 0 000 4v.5a2 2 0 002 2M10.5 3.5a2 2 0 012 2v.5a2 2 0 010 4v.5a2 2 0 01-2 2"/>',
+};
+
+async function api(path, opts = {}) {
+  const res = await fetch(path, {
+    method: opts.body ? "POST" : (opts.method || "GET"),
+    credentials: "same-origin",
+    headers: { "Content-Type": "application/json", "X-MM-Portal": "1" },
+    body: opts.body ? JSON.stringify(opts.body) : undefined,
+  });
+  if (res.status === 401 && !opts.noRedirect) { show("login"); throw new Error("signed out"); }
+  let data = null;
+  try { data = await res.json(); } catch {}
+  if (!res.ok) throw new Error((data && data.detail) || `Request failed (${res.status})`);
+  return data;
+}
+
+function toast(msg) {
+  const t = $("#toast"); t.textContent = msg; t.classList.add("show");
+  clearTimeout(toast._t); toast._t = setTimeout(() => t.classList.remove("show"), 2600);
+}
+
+/* ---------- time ---------- */
+function when(iso) {
+  if (!iso) return "";
+  const d = new Date(iso), s = (Date.now() - d) / 1000;
+  if (s < 60) return "just now";
+  if (s < 3600) return `${Math.floor(s / 60)} min ago`;
+  if (s < 86400) return `${Math.floor(s / 3600)} h ago`;
+  return d.toLocaleDateString(undefined, { month: "short", day: "numeric" }) + ", " +
+         d.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
+}
+function dayLabel(iso) {
+  const d = new Date(iso), today = new Date(); today.setHours(0, 0, 0, 0);
+  const that = new Date(d); that.setHours(0, 0, 0, 0);
+  const diff = (today - that) / 86400000;
+  if (diff === 0) return "Today";
+  if (diff === 1) return "Yesterday";
+  return d.toLocaleDateString(undefined, { weekday: "long", month: "short", day: "numeric" });
+}
+
+/* ---------- state ---------- */
+const S = { me: null, turns: [], chip: "all", q: "", selecting: false, sel: new Set(), tab: "memories" };
+
+function show(view) {
+  for (const v of ["login", "enroll", "main", "loading"]) $(`#v-${v}`).classList.toggle("hidden", v !== view);
+  $("#who").classList.toggle("hidden", view === "login" || view === "loading");
+}
+
+async function boot() {
+  show("loading");
+  try { S.me = await api("/portal/api/me", { noRedirect: true }); }
+  catch { show("login"); return; }
+  const name = S.me.name || S.me.email;
+  $("#who-name").textContent = S.me.email;
+  $("#who-av").textContent = (name.trim()[0] || "?").toUpperCase();
+  if (!S.me.enrolled) { show("enroll"); return; }
+  renderSpace();
+  show("main");
+  await loadTurns();
+}
+
+/* ---------- space card ---------- */
+function renderSpace() {
+  const m = S.me, sp = m.space;
+  $("#ns-text").textContent = `${sp.org_id} / ${sp.project_id}`;
+  $("#kv-owner").textContent = m.email;
+  $("#kv-org").textContent = sp.org_id;
+  $("#kv-proj").textContent = sp.project_id;
+  $("#kv-eps").textContent = sp.episodes;
+  const sw = $("#switch");
+  sw.classList.toggle("on", m.enabled);
+  sw.setAttribute("aria-checked", String(m.enabled));
+  $("#sw-state").textContent = m.enabled ? "Memory on" : "Memory paused";
+  $("#sw-sub").textContent = m.enabled
+    ? "Your assistant recalls and saves in chats that use memmachine- models."
+    : "Chats still work. Nothing is recalled or saved until you turn it back on.";
+  const acc = $("#access"); acc.replaceChildren();
+  for (const a of m.access) {
+    acc.append(h("div", { class: "acc" },
+      h("div", { class: "ic" }, svg(a.kind === "app" ? ICON.chat : ICON.key)),
+      h("div", {}, a.label, h("small", {}, a.detail))));
+  }
+  if (!m.access.length) acc.append(h("p", {}, "Nothing connected yet."));
+}
+
+function renderStats() {
+  const real = S.turns.filter(t => !t.automatic);
+  $("#st-turns").textContent = real.length;
+  $("#tab-count").textContent = real.length;
+  $("#st-last").textContent = real.length ? `Last saved ${when(real[0].at)}` : "";
+  const sources = [...new Set(real.map(t => t.source))].filter(s => s !== "Chat");
+  $("#st-from").textContent = sources.length ? `From ${sources.join(", ")}` : "";
+}
+
+/* ---------- memories ---------- */
+async function loadTurns() {
+  $("#list").replaceChildren(h("div", { class: "loading" }, h("span", { class: "spin" })));
+  try { S.turns = (await api("/portal/api/memories")).turns; }
+  catch (e) { $("#list").replaceChildren(h("div", { class: "empty" }, e.message)); return; }
+  S.sel.clear();
+  renderStats(); renderChips(); renderList();
+}
+
+const CHIP_DEFS = [
+  ["all", "All", t => !t.automatic],
+  ["Open WebUI", "Open WebUI", t => t.source === "Open WebUI" && !t.automatic],
+  ["key", "Personal key", t => t.source.startsWith("Key") && !t.automatic],
+  ["Added by you", "Added by you", t => t.source === "Added by you"],
+  ["Chat", "Earlier chats", t => t.source === "Chat" && !t.automatic],
+  ["auto", "Automatic", t => !!t.automatic],
+];
+function renderChips() {
+  const c = $("#chips"); c.replaceChildren();
+  for (const [id, label, fn] of CHIP_DEFS) {
+    const n = S.turns.filter(fn).length;
+    if (id !== "all" && !n) continue;
+    c.append(h("button", { class: "chip" + (S.chip === id ? " on" : ""),
+      onclick: () => { S.chip = id; renderChips(); renderList(); } }, label, h("span", { class: "n" }, n)));
+  }
+  const autos = S.turns.filter(t => t.automatic).length;
+  $("#auto-banner").classList.toggle("hidden", !autos);
+  $("#auto-text").textContent = `${autos} ${autos === 1 ? "entry is" : "entries are"} Open WebUI's own background work (chat titles, tags, follow-ups), not things you said. They're hidden from your list.`;
+}
+
+function visible() {
+  const fn = (CHIP_DEFS.find(c => c[0] === S.chip) || CHIP_DEFS[0])[2];
+  const q = S.q.trim().toLowerCase();
+  return S.turns.filter(t => fn(t) && (!q || (t.you || "").toLowerCase().includes(q) || (t.reply || "").toLowerCase().includes(q)));
+}
+
+function clampText(text, cls, lines) {
+  const p = h("div", { class: `msg ${cls} clamp${lines}` }, text);
+  const wrap = h("div", {}, p);
+  requestAnimationFrame(() => {
+    if (p.scrollHeight > p.clientHeight + 2) {
+      const more = h("button", { class: "more", onclick: () => {
+        const open = p.classList.toggle(`clamp${lines}`);
+        more.textContent = open ? "Show more" : "Show less";
+      } }, "Show more");
+      wrap.append(more);
+    }
+  });
+  return wrap;
+}
+
+function turnCard(t) {
+  const lines = [];
+  if (t.you) lines.push(h("div", { class: "line" }, h("div", { class: "who-ic you" }, "YOU"), clampText(t.you, "you", 3)));
+  if (t.reply) lines.push(h("div", { class: "line" }, h("div", { class: "who-ic ai" }, "AI"), clampText(t.reply, "ai", 2)));
+  const badges = [h("span", {}, when(t.at)), h("span", { class: "badge" + (t.source === "Added by you" ? " mine" : "") }, t.source)];
+  if (t.automatic) badges.push(h("span", { class: "badge auto" }, `Automatic · ${t.automatic}`));
+  const acts = h("div", { class: "acts" });
+  const del = h("button", { class: "icon-btn", title: "Delete", "aria-label": "Delete this memory", onclick: () => {
+    acts.replaceChildren(h("div", { class: "confirm" }, "Delete?",
+      h("button", { class: "btn danger solid", onclick: () => remove(t.ids, card) }, "Delete"),
+      h("button", { class: "btn", onclick: () => acts.replaceChildren(del) }, "Keep")));
+  } }, svg(ICON.trash));
+  acts.append(del);
+  const box = h("input", { type: "checkbox", "aria-label": "Select", onchange: e => {
+    t.ids.forEach(id => e.target.checked ? S.sel.add(id) : S.sel.delete(id)); renderSel();
+  } });
+  if (t.ids.every(id => S.sel.has(id))) box.checked = true;
+  const card = h("article", { class: "card turn" },
+    h("div", { class: "sel" }, box),
+    h("div", {}, ...lines, h("div", { class: "meta" }, badges)),
+    acts);
+  return card;
+}
+
+function renderList() {
+  const list = $("#list"); list.replaceChildren();
+  list.classList.toggle("selecting", S.selecting);
+  const rows = visible();
+  if (!rows.length) {
+    const none = !S.turns.length;
+    list.append(h("div", { class: "empty" }, svg(ICON.brain),
+      h("h3", {}, none ? "No memories yet" : "Nothing matches"),
+      h("div", {}, none ? "Chat with a memmachine- model in Open WebUI, or add a memory yourself."
+                        : "Try another word, or another filter.")));
+    return;
+  }
+  let lastDay = "";
+  for (const t of rows) {
+    const d = dayLabel(t.at);
+    if (d !== lastDay) { list.append(h("div", { class: "day" }, d)); lastDay = d; }
+    list.append(turnCard(t));
+  }
+}
+
+async function remove(ids, card) {
+  try {
+    await api("/portal/api/memories/delete", { body: { ids } });
+    card && card.remove();
+    S.turns = S.turns.filter(t => !t.ids.some(id => ids.includes(id)));
+    ids.forEach(id => S.sel.delete(id));
+    renderStats(); renderChips(); renderSel();
+    if (!card) renderList();
+    toast(ids.length > 2 ? "Memories deleted" : "Memory deleted");
+    refreshCount();
+  } catch (e) { toast(e.message); }
+}
+
+async function refreshCount() {
+  try { S.me = await api("/portal/api/me"); $("#kv-eps").textContent = S.me.space.episodes; } catch {}
+}
+
+function renderSel() {
+  $("#selbar").classList.toggle("hidden", !S.selecting);
+  const n = visible().filter(t => t.ids.every(id => S.sel.has(id))).length;
+  $("#sel-n").textContent = `${n} selected`;
+  $("#sel-del").disabled = !S.sel.size;
+}
+
+/* ---------- recall ---------- */
+async function recall(q) {
+  const out = $("#recall-out");
+  out.replaceChildren(h("div", { class: "loading" }, h("span", { class: "spin" })));
+  try {
+    const { items } = await api("/portal/api/recall", { body: { query: q } });
+    out.replaceChildren();
+    if (!S.me.enabled) out.append(h("div", { class: "banner" }, "Memory is paused, so right now nothing would actually be recalled. This is what would be, once it's on."));
+    if (!items.length) { out.append(h("div", { class: "empty" }, h("h3", {}, "Nothing would be recalled"), h("div", {}, "The assistant would answer this without any memory."))); return; }
+    const max = Math.max(...items.map(i => i.score || 0), 0.0001);
+    for (const it of items) {
+      const card = h("article", { class: "card hit" },
+        h("div", {}, h("div", { class: "score" }, it.score != null ? it.score.toFixed(2) : "—"),
+          h("div", { class: "bar" }, h("i", { style: `width:${Math.round(100 * (it.score || 0) / max)}%` }))),
+        h("div", {}, h("div", { class: "line" },
+            h("div", { class: "who-ic " + (it.role === "assistant" ? "ai" : "you") }, it.role === "assistant" ? "AI" : "YOU"),
+            clampText(it.text, it.role === "assistant" ? "ai" : "you", 3)),
+          h("div", { class: "meta" }, h("span", {}, when(it.at)), h("span", { class: "badge" }, it.source))),
+        h("div", { class: "acts", style: "opacity:1" }, h("button", { class: "icon-btn", title: "Delete", onclick: async () => {
+          await remove([it.id], null); card.remove();
+        } }, svg(ICON.trash))));
+      out.append(card);
+    }
+    out.append(h("div", { class: "prompt-preview" },
+      "<memory>\nBelow is information retrieved from previous sessions…\n" +
+      items.map(i => "- " + i.text.replace(/\s+/g, " ").slice(0, 140)).join("\n") + "\n</memory>"));
+  } catch (e) { out.replaceChildren(h("div", { class: "empty" }, e.message)); }
+}
+
+/* ---------- wiring ---------- */
+$("#login-form").addEventListener("submit", async e => {
+  e.preventDefault();
+  const btn = $("#login-btn"); btn.disabled = true; $("#login-err").textContent = "";
+  try {
+    await api("/portal/api/login", { body: { email: $("#email").value, password: $("#password").value }, noRedirect: true });
+    $("#password").value = ""; await boot();
+  } catch (err) { $("#login-err").textContent = err.message; }
+  finally { btn.disabled = false; }
+});
+$("#logout").addEventListener("click", async () => { await api("/portal/api/logout", { body: {} }).catch(() => {}); S.turns = []; show("login"); });
+$("#enroll-btn").addEventListener("click", async () => { await api("/portal/api/enroll", { body: {} }); toast("Memory is on"); boot(); });
+
+async function toggleSwitch() {
+  const next = !S.me.enabled;
+  try {
+    await api("/portal/api/switch", { body: { enabled: next } });
+    S.me.enabled = next; renderSpace();
+    toast(next ? "Memory turned on" : "Memory paused — chats keep working");
+  } catch (e) { toast(e.message); }
+}
+$("#switch").addEventListener("click", toggleSwitch);
+$("#switch").addEventListener("keydown", e => { if (e.key === " " || e.key === "Enter") { e.preventDefault(); toggleSwitch(); } });
+$("#ns").addEventListener("click", () => { navigator.clipboard?.writeText($("#ns-text").textContent); toast("Namespace copied"); });
+
+for (const tab of $$(".tab")) tab.addEventListener("click", () => {
+  S.tab = tab.dataset.tab;
+  $$(".tab").forEach(t => t.classList.toggle("on", t === tab));
+  for (const id of ["memories", "recall", "settings"]) $(`#t-${id}`).classList.toggle("hidden", id !== S.tab);
+  if (S.tab === "recall") $("#recall-q").focus();
+});
+
+$("#filter").addEventListener("input", e => { S.q = e.target.value; renderList(); renderSel(); });
+$("#select-btn").addEventListener("click", () => { S.selecting = !S.selecting; S.sel.clear(); renderList(); renderSel(); });
+$("#sel-cancel").addEventListener("click", () => { S.selecting = false; S.sel.clear(); renderList(); renderSel(); });
+$("#sel-all").addEventListener("click", () => { visible().forEach(t => t.ids.forEach(id => S.sel.add(id))); renderList(); renderSel(); });
+$("#sel-del").addEventListener("click", async () => {
+  const ids = [...S.sel];
+  if (!ids.length || !confirm(`Delete ${visible().filter(t => t.ids.every(id => S.sel.has(id))).length} selected memories?`)) return;
+  await remove(ids, null); S.selecting = false; renderList(); renderSel();
+});
+$("#auto-clean").addEventListener("click", async () => {
+  const ids = S.turns.filter(t => t.automatic).flatMap(t => t.ids);
+  await remove(ids, null);
+});
+
+$("#add-btn").addEventListener("click", () => { $("#add-text").value = ""; $("#dlg-add").showModal(); $("#add-text").focus(); });
+$("#add-form").addEventListener("submit", async e => {
+  if (e.submitter && e.submitter.value !== "save") return;
+  e.preventDefault();
+  const text = $("#add-text").value.trim();
+  if (!text) return;
+  $("#add-save").disabled = true;
+  try { await api("/portal/api/memories/add", { body: { text } }); $("#dlg-add").close(); toast("Saved — it may take a few seconds to be searchable"); await loadTurns(); refreshCount(); }
+  catch (err) { toast(err.message); }
+  finally { $("#add-save").disabled = false; }
+});
+
+$("#clear-btn").addEventListener("click", () => {
+  $("#clear-n").textContent = S.me.space.episodes; $("#clear-confirm").value = ""; $("#clear-go").disabled = true; $("#dlg-clear").showModal();
+});
+$("#clear-confirm").addEventListener("input", e => { $("#clear-go").disabled = e.target.value.trim().toLowerCase() !== "delete"; });
+$("#clear-form").addEventListener("submit", async e => {
+  if (e.submitter && e.submitter.value !== "go") return;
+  e.preventDefault();
+  try { const r = await api("/portal/api/memories/clear", { body: {} }); $("#dlg-clear").close(); toast(`Deleted ${r.deleted} entries`); await loadTurns(); refreshCount(); }
+  catch (err) { toast(err.message); }
+});
+
+$("#recall-form").addEventListener("submit", e => { e.preventDefault(); const q = $("#recall-q").value.trim(); if (q) recall(q); });
+
+boot();
+</script>
+</body>
+</html>
