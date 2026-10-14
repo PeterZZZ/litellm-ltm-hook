@@ -18,3 +18,10 @@ dependencies = [
     # that turning the feature on is a config change and not an install.
     "pyjwt",
 ]
+
+[dependency-groups]
+# The mock platform (mock_platform/). Not needed by the hook itself.
+platform = [
+    "fastapi",
+    "uvicorn",
+]

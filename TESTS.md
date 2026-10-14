@@ -2,14 +2,17 @@
 
 This guide covers the current MemMachine integration in `litellm-ltm-hook`.
 
-Four test files, in increasing scope:
+Six test files, in increasing scope:
 
 | File | Scope | Requires |
 |------|-------|----------|
 | `test_hook.py` | unit + live (httpx-mocked + direct MemMachine API) | `httpx`, `pytest`; live needs `MEMMACHINE_BASE_URL` set and reachable |
 | `test_identity.py` | unit: the forwarded signed-identity path | `pyjwt`, `pytest`; no network |
+| `test_platform.py` | unit: the mock platform's authorize() rules and request rewriting | `uv run --group platform`; no network |
+| `test_platform_mode.py` | unit: the hook in platform mode (`MEMMACHINE_PLATFORM=1`) | `pytest`; no network |
 | `test_e2e_store.py` | end-to-end store path through the litellm proxy | litellm-test proxy up, virtual key, MemMachine up |
 | `test_e2e_recall.py` | end-to-end 2-turn recall through the litellm proxy | same as above |
+| `tools/platform_e2e.py` | end-to-end: Open WebUI → LiteLLM → mock platform → core (14 checks) | the full stack up; see the script's docstring |
 | `tools/cleanup_memories.py` | utility: delete all episodic memories in a project | MemMachine up |
 
 ---

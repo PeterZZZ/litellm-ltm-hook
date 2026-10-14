@@ -24,6 +24,7 @@ Clients don't need to change — OpenAI Chat Completions (`/v1/chat/completions`
 | `test_e2e_store.py` | E2E: store path through the litellm proxy → MemMachine |
 | `test_e2e_recall.py` | E2E: 2-turn recall through the litellm proxy → MemMachine |
 | `tools/cleanup_memories.py` | Utility: delete all episodic memories in a MemMachine project |
+| `mock_platform/` | Mock MemMachine platform: authenticates the calling LiteLLM and decides identity and namespace (see its README) |
 | `DEV.md` | MemMachine hook implementation notes & known limitations |
 | `TESTS.md` | MemMachine hook test configuration and usage |
 
@@ -211,6 +212,14 @@ token recovered from a log can be replayed for the rest of its lifetime
 (Open WebUI's default is five minutes), with any LiteLLM key, not only the one
 Open WebUI used. Keep the token lifetime short, and treat logs that capture
 request headers accordingly.
+
+## Platform mode (experimental)
+
+With `MEMMACHINE_PLATFORM=1` the hook stops deciding identity or namespace. It
+sends the virtual key's hash, Open WebUI's signed token (unverified) and its own
+service credential to a MemMachine platform, which authenticates, authorizes,
+and picks the namespace. `mock_platform/` is a minimal one for development; see
+[`mock_platform/README.md`](./mock_platform/README.md).
 
 ## Design notes
 
