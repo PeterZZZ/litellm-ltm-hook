@@ -43,6 +43,9 @@ from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, Resp
 from .registry import Registry, User
 
 COOKIE = "mm_portal"
+# Bumped whenever the page and these routes change together. A tab still running
+# an older page sees a different value and reloads itself instead of breaking.
+UI_VERSION = "2026-10-15.2"
 SESSION_SECONDS = 8 * 60 * 60
 MAX_EPISODES = 5000
 _PAGE = 100
@@ -279,9 +282,10 @@ def mount_portal(
         user = registry.user_by_email(email)
         if user is None:
             admins = [u.email for u in registry.users() if u.is_admin]
-            return {"email": email, "name": name, "enrolled": False, "admins": admins}
+            return {"email": email, "name": name, "enrolled": False, "admins": admins,
+                    "ui": UI_VERSION}
         return {
-            "email": email, "name": name, "enrolled": True, "role": user.role,
+            "email": email, "name": name, "enrolled": True, "role": user.role, "ui": UI_VERSION,
             "signed_in_via": "Open WebUI password check",
             "namespaces": [{
                 "name": user.project_id, "org_id": user.org_id, "project_id": user.project_id,

@@ -488,10 +488,12 @@ function show(view) {
   $("#who").classList.toggle("hidden", view === "login" || view === "loading");
 }
 
+const UI_VERSION = "2026-10-15.2";
 async function boot() {
   show("loading");
   try { S.me = await api("/portal/api/me", { noRedirect: true }); } catch { show("login"); return; }
   const m = S.me;
+  if (m.ui !== UI_VERSION) { location.reload(); return; }  // this tab holds an older page
   $("#who-name").textContent = m.email;
   $("#who-av").textContent = ((m.name || m.email).trim()[0] || "?").toUpperCase();
   if (!m.enrolled) {
