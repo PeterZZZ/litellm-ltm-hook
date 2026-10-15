@@ -80,8 +80,35 @@ def check(name, ok, detail):
     print(f"{'PASS' if ok else 'FAIL'}  {name}\n      {detail[:150]}")
 
 
+def clear_earlier_runs(email):
+    """Delete this script's leftovers from earlier runs, through the portal.
+
+    Every run stores its question verbatim, and identical questions from earlier
+    runs outrank the new fact in recall; left alone, each run makes the next one
+    less likely to pass.
+    """
+    import http.cookiejar
+    jar = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(http.cookiejar.CookieJar()))
+
+    def portal(path, body=None):
+        req = urllib.request.Request(
+            f"{PLATFORM}{path}", data=json.dumps(body).encode() if body is not None else None,
+            headers={"Content-Type": "application/json", "X-MM-Portal": "1"},
+            method="POST" if body is not None else "GET")
+        with jar.open(req, timeout=120) as r:
+            return json.load(r)
+
+    portal("/portal/api/login", {"email": email, "password": accounts[email]})
+    ids = [i for t in portal("/portal/api/memories")["turns"]
+           if "codename of project" in (t["you"] or "") + (t["reply"] or "") for i in t["ids"]]
+    if ids:
+        portal("/portal/api/memories/delete", {"ids": ids})
+    print(f"(cleared {len(ids)} messages left by earlier runs from {email})")
+
+
 OW = f"{OWUI}/api/chat/completions"
 LL = f"{LITELLM}/v1/chat/completions"
+clear_earlier_runs("alice@corp.example")
 alice, bob, carol = (owui_login(f"{n}@corp.example") for n in ("alice", "bob", "carol"))
 
 s, a = chat(OW, alice, f"Remember this: the codename of project {RUN} is {FACT}.")

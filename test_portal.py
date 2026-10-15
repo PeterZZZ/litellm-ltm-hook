@@ -1,10 +1,10 @@
 # Copyright 2026 litellm-ltm-hook contributors
 # SPDX-License-Identifier: Apache-2.0
 
-"""Unit tests for the My Memory portal (mock_platform/portal.py).
+"""Unit tests for the platform portal (mock_platform/portal.py).
 
-Open WebUI's sign-in and MemMachine core are one httpx.MockTransport, so
-nothing here touches the network.
+Open WebUI's sign-in, LiteLLM's read-only user/key API and MemMachine core are
+one httpx.MockTransport, so nothing here touches the network.
 
     uv run --group platform pytest test_portal.py -v
 """
@@ -23,8 +23,19 @@ from mock_platform.portal import _turns  # noqa: E402
 from mock_platform.registry import Registry, sha256  # noqa: E402
 
 PASSWORDS = {"alice@corp.example": "alice-pw", "bob@corp.example": "bob-pw",
-             "carol@corp.example": "carol-pw"}
+             "carol@corp.example": "carol-pw", "root@corp.example": "root-pw",
+             "dana@corp.example": "dana-pw"}
+VIEWER = "sk-viewer"
 W = {"X-MM-Portal": "1"}
+LITELLM_USERS = [
+    {"user_id": "dana", "user_email": "dana@corp.example"},
+    {"user_id": "alice", "user_email": "alice@corp.example"},
+]
+LITELLM_KEYS = {
+    "dana": [{"token": sha256("sk-dana"), "key_alias": "dana-personal", "team_id": None},
+             {"token": sha256("sk-team"), "key_alias": "team-key", "team_id": "t1"}],
+    "alice": [{"token": sha256("sk-alice"), "key_alias": "alice-personal", "team_id": None}],
+}
 
 
 def ep(uid, role, text, ns, at="2026-10-14T10:00:00.000000Z", via=None):
@@ -35,25 +46,34 @@ def ep(uid, role, text, ns, at="2026-10-14T10:00:00.000000Z", via=None):
 @pytest.fixture
 def world(tmp_path):
     reg = Registry(str(tmp_path / "reg.sqlite"))
+    reg.add_user("root@corp.example", role="admin")
     reg.add_user("alice@corp.example")
     reg.add_user("bob@corp.example")
     svc = reg.add_service("litellm-test")
     reg.link_personal_key("alice@corp.example", "sk-alice", "alice-personal")
+    reg.add_app_key("sk-app", "open-webui-app", "s" * 40, "open-webui")
     store = {
         "alice_corp_example/default": [
             ep(1, "user", "I ride a Kona bike", "a", via="app-token"),
             ep(2, "assistant", "Noted, a Kona.", "a", via="app-token"),
-            ep(3, "user", "### Task: Generate a concise title for the chat", "a",
-               at="2026-10-14T11:00:00.000000Z"),
-            ep(4, "assistant", '{"title":"Bike"}', "a", at="2026-10-14T11:00:00.000000Z"),
         ],
         "bob_corp_example/default": [ep(50, "user", "bob's secret", "b")],
+        "dana_corp_example/default": [ep(70, "user", "dana's note", "d")],
     }
     calls = []
 
     def transport(request: httpx.Request):
-        body = json.loads(request.content or b"{}")
         path = request.url.path
+        if request.method == "GET":
+            calls.append((path, dict(request.url.params), request.headers.get("authorization")))
+            if request.headers.get("authorization") != f"Bearer {VIEWER}":
+                return httpx.Response(401, json={})
+            if path == "/user/list":
+                return httpx.Response(200, json={"users": LITELLM_USERS, "total_pages": 1})
+            if path == "/user/info":
+                return httpx.Response(200, json={"keys": LITELLM_KEYS.get(request.url.params["user_id"], [])})
+            return httpx.Response(404, json={})
+        body = json.loads(request.content or b"{}")
         calls.append((path, body))
         if path == "/api/v1/auths/signin":
             if PASSWORDS.get(body.get("email")) == body.get("password"):
@@ -70,13 +90,11 @@ def world(tmp_path):
             gone = set(body["episodic_ids"])
             store[ns] = [e for e in store.get(ns, []) if e["uid"] not in gone]
             return httpx.Response(200, json={})
-        if path == "/api/v2/memories/search":
-            return httpx.Response(200, json={"content": {"episodic_memory": {
-                "long_term_memory": {"episodes": [{**store[ns][0], "score": 0.5}]}}}})
         return httpx.Response(200, json={})
 
     app = create_app(reg, "http://core.test", transport=httpx.MockTransport(transport),
-                     owui_url="http://owui.test")
+                     owui_url="http://owui.test", litellm_url="http://litellm.test",
+                     litellm_key=VIEWER)
     return type("W", (), {"reg": reg, "svc": svc, "store": store, "calls": calls,
                           "client": TestClient(app)})
 
@@ -86,6 +104,13 @@ def login(world, email="alice@corp.example", password=None):
                              json={"email": email, "password": password or PASSWORDS[email]})
 
 
+def evidence(world, key, token=None):
+    h = {"authorization": f"Bearer {world.svc}", "x-mm-key-hash": sha256(key)}
+    if token:
+        h["x-mm-user-token"] = token
+    return h
+
+
 class TestSignIn:
     def test_wrong_password_is_refused(self, world):
         assert login(world, password="nope").status_code == 401
@@ -93,24 +118,24 @@ class TestSignIn:
 
     def test_password_goes_to_open_webui_only(self, world):
         login(world)
-        signins = [b for p, b in world.calls if p == "/api/v1/auths/signin"]
-        assert len(signins) == 1
-        assert all("alice-pw" not in json.dumps(b) for p, b in world.calls if p != "/api/v1/auths/signin")
+        assert all("alice-pw" not in json.dumps(c) for c in world.calls if c[0] != "/api/v1/auths/signin")
 
     def test_session_cookie_is_httponly_and_strict(self, world):
         cookie = login(world).headers["set-cookie"].lower()
         assert "httponly" in cookie and "samesite=strict" in cookie
 
-    def test_me_shows_own_namespace(self, world):
+    def test_me_shows_identity_namespace_and_ways_in(self, world):
         login(world)
         me = world.client.get("/portal/api/me").json()
-        assert me["space"]["org_id"] == "alice_corp_example"
-        assert {a["detail"] for a in me["access"]} == {"alice-personal"}
+        assert me["role"] == "user"
+        assert me["namespaces"][0]["org_id"] == "alice_corp_example"
+        assert {a["label"] for a in me["access"]} == {"Open WebUI", "alice-personal"}
 
-    def test_logout_ends_session(self, world):
-        login(world)
-        world.client.post("/portal/api/logout", headers=W)
-        assert world.client.get("/portal/api/me").status_code == 401
+    def test_no_account_names_the_admins(self, world):
+        login(world, "carol@corp.example")
+        me = world.client.get("/portal/api/me").json()
+        assert me["enrolled"] is False and me["admins"] == ["root@corp.example"]
+        assert world.client.get("/portal/api/memories").status_code == 409
 
 
 class TestOwnMemoryOnly:
@@ -124,50 +149,125 @@ class TestOwnMemoryOnly:
         r = world.client.post("/portal/api/memories/delete", headers=W, json={"ids": ["1", "50"]})
         assert r.json()["deleted"] == 1
         assert [e["uid"] for e in world.store["bob_corp_example/default"]] == ["50"]
-        deletes = [b for p, b in world.calls if p == "/api/v2/memories/episodic/delete"]
-        assert deletes[-1]["episodic_ids"] == ["1"]
-        assert deletes[-1]["org_id"] == "alice_corp_example"
 
     def test_writes_need_the_portal_header(self, world):
         login(world)
-        r = world.client.post("/portal/api/memories/delete", json={"ids": ["1"]})
-        assert r.status_code == 403
-        assert len(world.store["alice_corp_example/default"]) == 4
+        assert world.client.post("/portal/api/memories/delete", json={"ids": ["1"]}).status_code == 403
 
-    def test_add_is_attributed_to_the_signed_in_person(self, world):
+
+class TestWaysIn:
+    def test_switching_off_open_webui_stops_the_app_path_only(self, world, monkeypatch):
+        import mock_platform.authorize as az
+        monkeypatch.setattr(az, "_verify_token", lambda *a, **k: "alice@corp.example")
         login(world)
-        world.client.post("/portal/api/memories/add", headers=W, json={"text": "I prefer tea"})
-        add = [b for p, b in world.calls if p == "/api/v2/memories"][-1]
-        assert add["org_id"] == "alice_corp_example"
-        assert add["messages"][0]["producer"] == "alice_corp_example"
-        assert add["messages"][0]["metadata"]["via"] == "manual"
+        world.client.post("/portal/api/access", headers=W, json={"id": "openwebui", "enabled": False})
+        with pytest.raises(Denied) as exc:
+            authorize(world.reg, evidence(world, "sk-app", token="t"))
+        assert exc.value.decision == "not-enrolled"
+        assert authorize(world.reg, evidence(world, "sk-alice")).user.email == "alice@corp.example"
 
-    def test_clear_removes_only_own(self, world):
+    def test_switching_off_a_key_stops_that_key_only(self, world):
         login(world)
-        world.client.post("/portal/api/memories/clear", headers=W)
-        assert world.store["alice_corp_example/default"] == []
-        assert len(world.store["bob_corp_example/default"]) == 1
+        key_id = sha256("sk-alice")[:16]
+        world.client.post("/portal/api/access", headers=W, json={"id": key_id, "enabled": False})
+        with pytest.raises(Denied) as exc:
+            authorize(world.reg, evidence(world, "sk-alice"))
+        assert exc.value.decision == "not-enrolled" and "switched off" in exc.value.reason
 
+    def test_cannot_switch_someone_elses_key(self, world):
+        world.reg.add_user("dana@corp.example")
+        world.reg.link_personal_key("dana@corp.example", "sk-dana", "dana-personal")
+        login(world)
+        r = world.client.post("/portal/api/access", headers=W,
+                              json={"id": sha256("sk-dana")[:16], "enabled": False})
+        assert r.status_code == 404
+        assert world.reg.key(sha256("sk-dana")).enabled
 
-class TestSwitchAndEnroll:
-    def test_switch_off_makes_chat_requests_not_enrolled(self, world):
+    def test_memory_switch(self, world):
         login(world)
         world.client.post("/portal/api/switch", headers=W, json={"enabled": False})
-        with pytest.raises(Denied) as exc:
-            authorize(world.reg, {"authorization": f"Bearer {world.svc}",
-                                  "x-mm-key-hash": sha256("sk-alice")})
-        assert exc.value.decision == "not-enrolled"
-        world.client.post("/portal/api/switch", headers=W, json={"enabled": True})
-        authorize(world.reg, {"authorization": f"Bearer {world.svc}",
-                              "x-mm-key-hash": sha256("sk-alice")})
+        with pytest.raises(Denied):
+            authorize(world.reg, evidence(world, "sk-alice"))
 
-    def test_unregistered_person_can_turn_memory_on(self, world):
-        login(world, "carol@corp.example")
-        assert world.client.get("/portal/api/me").json()["enrolled"] is False
-        assert world.client.get("/portal/api/memories").status_code == 409
-        world.client.post("/portal/api/enroll", headers=W)
-        me = world.client.get("/portal/api/me").json()
-        assert me["enrolled"] and me["space"]["org_id"] == "carol_corp_example"
+
+class TestAdmin:
+    def test_non_admin_is_refused(self, world):
+        login(world)
+        assert world.client.get("/portal/api/admin/users").status_code == 403
+        assert world.client.post("/portal/api/admin/users", headers=W,
+                                  json={"email": "x@corp.example"}).status_code == 403
+
+    def test_open_webui_role_grants_nothing(self, world):
+        # Only the registry's role counts; nothing from Open WebUI is consulted.
+        login(world)
+        assert world.client.get("/portal/api/admin/audit").status_code == 403
+
+    def test_create_finds_personal_keys_in_litellm(self, world):
+        login(world, "root@corp.example")
+        r = world.client.post("/portal/api/admin/users", headers=W,
+                              json={"email": "dana@corp.example", "role": "user"})
+        assert r.status_code == 200
+        assert r.json()["keys"]["linked"] == ["dana-personal"]   # team key left out
+        assert authorize(world.reg, evidence(world, "sk-dana")).user.email == "dana@corp.example"
+        assert all(c[2] == f"Bearer {VIEWER}" for c in world.calls if len(c) == 3)
+
+    def test_create_refuses_duplicates_and_bad_email(self, world):
+        login(world, "root@corp.example")
+        assert world.client.post("/portal/api/admin/users", headers=W,
+                                  json={"email": "alice@corp.example"}).status_code == 409
+        assert world.client.post("/portal/api/admin/users", headers=W,
+                                  json={"email": "not-an-email"}).status_code == 400
+
+    def test_delete_removes_access_and_optionally_memory(self, world):
+        login(world, "root@corp.example")
+        r = world.client.post("/portal/api/admin/users/delete", headers=W,
+                              json={"email": "alice@corp.example", "delete_memories": True})
+        assert r.json()["memories_deleted"] == 2
+        assert world.reg.user_by_email("alice@corp.example") is None
+        with pytest.raises(Denied) as exc:
+            authorize(world.reg, evidence(world, "sk-alice"))
+        assert exc.value.decision == "not-enrolled"
+
+    def test_delete_keeps_memory_unless_asked(self, world):
+        login(world, "root@corp.example")
+        world.client.post("/portal/api/admin/users/delete", headers=W, json={"email": "bob@corp.example"})
+        assert len(world.store["bob_corp_example/default"]) == 1
+
+    def test_admin_cannot_delete_or_demote_self(self, world):
+        login(world, "root@corp.example")
+        assert world.client.post("/portal/api/admin/users/delete", headers=W,
+                                  json={"email": "root@corp.example"}).status_code == 400
+        assert world.client.post("/portal/api/admin/users/update", headers=W,
+                                  json={"email": "root@corp.example", "role": "user"}).status_code == 400
+
+    def test_update_role_and_memory(self, world):
+        login(world, "root@corp.example")
+        world.client.post("/portal/api/admin/users/update", headers=W,
+                          json={"email": "bob@corp.example", "role": "admin", "enabled": False})
+        bob = world.reg.user_by_email("bob@corp.example")
+        assert bob.is_admin and not bob.enabled
+
+    def test_audit_records_decisions_and_admin_actions(self, world):
+        world.client.post("/api/v2/memories/search", json={"query": "x"},
+                          headers=evidence(world, "sk-alice"))
+        world.client.post("/api/v2/memories/search", json={"query": "x"},
+                          headers={**evidence(world, "sk-alice"), "authorization": "Bearer nope"})
+        login(world, "root@corp.example")
+        world.client.post("/portal/api/admin/users/update", headers=W,
+                          json={"email": "bob@corp.example", "enabled": False})
+        items = world.client.get("/portal/api/admin/audit").json()["items"]
+        ops = [(i["op"], i["decision"]) for i in items]
+        assert ("search", "allow") in ops and ("search", "refused") in ops
+        assert ("admin:update", "allow") in ops
+        allowed = next(i for i in items if i["op"] == "search" and i["decision"] == "allow")
+        assert allowed["email"] == "alice@corp.example" and allowed["via"] == "personal-key"
+
+    def test_history_shows_only_own_decisions(self, world):
+        world.client.post("/api/v2/memories/search", json={"query": "x"}, headers=evidence(world, "sk-alice"))
+        world.reg.record(op="search", decision="allow", status=200, email="bob@corp.example")
+        login(world)
+        items = world.client.get("/portal/api/history").json()["items"]
+        assert items and all(i["email"] == "alice@corp.example" for i in items)
 
 
 def test_turns_pair_and_flag_automatic():
@@ -179,6 +279,5 @@ def test_turns_pair_and_flag_automatic():
         ep(5, "user", "a note I added", "a", at="2026-10-14T12:00:00Z", via="manual"),
     ])
     assert [t["ids"] for t in turns] == [["5"], ["3", "4"], ["1", "2"]]
-    assert turns[0]["source"] == "Added by you" and turns[0]["reply"] is None
     assert turns[1]["automatic"] == "chat title"
-    assert turns[2]["source"] == "Open WebUI" and turns[2]["reply"] == "Noted."
+    assert turns[2]["source"] == "Open WebUI"

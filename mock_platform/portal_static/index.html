@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>My Memory</title>
+<title>MemMachine Platform</title>
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%235b5bd6'/%3E%3Cpath d='M9 21V11l7 6 7-6v10' stroke='white' stroke-width='2.6' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
 <style>
 :root{
@@ -21,9 +21,9 @@
 }}
 *{box-sizing:border-box}
 html,body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.5 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;-webkit-font-smoothing:antialiased}
-button,input,textarea{font:inherit;color:inherit}
+button,input,textarea,select{font:inherit;color:inherit}
 .hidden{display:none!important}
-.wrap{max-width:1000px;margin:0 auto;padding:0 20px}
+.wrap{max-width:1080px;margin:0 auto;padding:0 20px}
 header{position:sticky;top:0;z-index:5;background:color-mix(in srgb,var(--bg) 88%,transparent);backdrop-filter:blur(10px);border-bottom:1px solid var(--line)}
 header .wrap{display:flex;align-items:center;gap:12px;height:60px}
 .brand{display:flex;align-items:center;gap:10px;font-weight:650;letter-spacing:-.01em}
@@ -33,8 +33,9 @@ header .wrap{display:flex;align-items:center;gap:12px;height:60px}
 .spacer{flex:1}
 .who{display:flex;align-items:center;gap:10px;color:var(--ink-2);font-size:14px}
 .avatar{width:30px;height:30px;border-radius:50%;background:var(--accent-soft);color:var(--accent);display:grid;place-items:center;font-weight:650;font-size:13px}
-.btn{border:1px solid var(--line-2);background:var(--panel);border-radius:10px;padding:8px 14px;cursor:pointer;display:inline-flex;align-items:center;gap:8px;white-space:nowrap;transition:background .15s,border-color .15s}
+.btn{border:1px solid var(--line-2);background:var(--panel);border-radius:10px;padding:8px 14px;cursor:pointer;display:inline-flex;align-items:center;gap:8px;white-space:nowrap;transition:background .15s,border-color .15s;text-decoration:none;color:inherit}
 .btn:hover{border-color:var(--ink-3)}
+.btn.sm{padding:5px 10px;font-size:13px;border-radius:8px}
 .btn.primary{background:var(--accent);border-color:var(--accent);color:var(--accent-ink);font-weight:600}
 .btn.primary:hover{filter:brightness(1.07)}
 .btn.ghost{border-color:transparent;background:transparent;color:var(--ink-2)}
@@ -43,55 +44,83 @@ header .wrap{display:flex;align-items:center;gap:12px;height:60px}
 .btn.danger.solid{background:var(--bad);color:#fff;border-color:var(--bad)}
 .btn:disabled{opacity:.5;cursor:not-allowed}
 .btn svg{width:16px;height:16px}
-a.btn{text-decoration:none;color:inherit}
 .card{background:var(--panel);border:1px solid var(--line);border-radius:var(--r);box-shadow:var(--shadow)}
 main{padding:28px 0 80px}
+code,.mono{font-family:var(--mono);font-size:13px}
 
 /* sign in */
 .center{min-height:calc(100vh - 60px);display:grid;place-items:center;padding:24px}
-.login{width:100%;max-width:400px;padding:32px}
+.login{width:100%;max-width:420px;padding:32px}
 .login h1{margin:0 0 6px;font-size:22px;letter-spacing:-.02em}
 .login p.lead{margin:0 0 22px;color:var(--ink-2)}
 label.f{display:block;font-size:13px;font-weight:600;color:var(--ink-2);margin:14px 0 6px}
-input.t,textarea.t{width:100%;padding:10px 12px;border:1px solid var(--line-2);border-radius:10px;background:var(--panel-2);outline:none;transition:border-color .15s,box-shadow .15s}
-input.t:focus,textarea.t:focus{border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-soft)}
+input.t,textarea.t,select.t{width:100%;padding:10px 12px;border:1px solid var(--line-2);border-radius:10px;background:var(--panel-2);outline:none;transition:border-color .15s,box-shadow .15s}
+input.t:focus,textarea.t:focus,select.t:focus{border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-soft)}
 .login .btn.primary{width:100%;justify-content:center;margin-top:20px;padding:11px}
 .err{color:var(--bad);font-size:14px;margin-top:12px;min-height:20px}
 .fine{font-size:12.5px;color:var(--ink-3);margin-top:18px;display:flex;gap:8px;align-items:flex-start}
 .fine svg{flex:none;width:14px;height:14px;margin-top:2px}
 
-/* space card */
-.space{padding:24px;display:grid;grid-template-columns:1fr auto;gap:24px;align-items:center}
-.eyebrow{font-size:12px;font-weight:650;text-transform:uppercase;letter-spacing:.06em;color:var(--ink-3)}
-.space h2{margin:4px 0 10px;font-size:24px;letter-spacing:-.02em;display:flex;align-items:center;gap:10px}
-.ns{font-family:var(--mono);font-size:13px;background:var(--panel-2);border:1px solid var(--line);padding:4px 10px;border-radius:8px;color:var(--ink-2);display:inline-flex;align-items:center;gap:8px;cursor:pointer}
-.ns:hover{border-color:var(--line-2)}
-.ns svg{width:13px;height:13px;color:var(--ink-3)}
-.stats{display:flex;flex-wrap:wrap;gap:8px 22px;margin-top:16px;color:var(--ink-2);font-size:14px}
-.stats b{color:var(--ink);font-weight:650}
-.switch{display:flex;align-items:center;gap:14px;padding:14px 18px;border-radius:12px;background:var(--panel-2);border:1px solid var(--line);cursor:pointer;user-select:none;min-width:280px}
-.switch .txt{flex:1}
-.switch .st{font-weight:650}
-.switch .sub{font-size:12.5px;color:var(--ink-3);max-width:230px}
-.tog{width:46px;height:26px;border-radius:13px;background:var(--line-2);position:relative;flex:none;transition:background .2s}
-.tog::after{content:"";position:absolute;top:3px;left:3px;width:20px;height:20px;border-radius:50%;background:#fff;box-shadow:0 1px 3px rgba(0,0,0,.25);transition:left .2s}
-.switch.on .tog{background:var(--good)}
-.switch.on .tog::after{left:23px}
-.switch.on .st{color:var(--good)}
+/* identity */
+.ident{padding:22px 24px;display:flex;gap:20px;align-items:center;flex-wrap:wrap}
+.ident .big{width:52px;height:52px;border-radius:14px;background:var(--accent-soft);color:var(--accent);display:grid;place-items:center;font-weight:700;font-size:20px}
+.ident h2{margin:0;font-size:20px;letter-spacing:-.01em}
+.facts{display:flex;flex-wrap:wrap;gap:6px 18px;margin-top:6px;font-size:13.5px;color:var(--ink-2)}
+.facts span{display:inline-flex;gap:6px;align-items:center}
+.facts svg{width:14px;height:14px;color:var(--ink-3)}
+.role{display:inline-block;font-size:12px;font-weight:650;padding:2px 9px;border-radius:999px;background:var(--panel-2);border:1px solid var(--line);color:var(--ink-2);text-transform:uppercase;letter-spacing:.04em}
+.role.admin{background:var(--accent);border-color:var(--accent);color:var(--accent-ink)}
 
 /* tabs */
-.tabs{display:flex;gap:4px;margin:28px 0 18px;border-bottom:1px solid var(--line);overflow-x:auto;scrollbar-width:none}
+.tabs{display:flex;gap:4px;margin:24px 0 18px;border-bottom:1px solid var(--line);overflow-x:auto;scrollbar-width:none}
 .tab{white-space:nowrap;flex:none;border:none;background:none;padding:10px 14px;cursor:pointer;color:var(--ink-3);font-weight:600;border-bottom:2px solid transparent;margin-bottom:-1px;display:flex;gap:8px;align-items:center}
 .tab:hover{color:var(--ink-2)}
 .tab.on{color:var(--ink);border-bottom-color:var(--accent)}
 .count{font-size:12px;background:var(--panel-2);border:1px solid var(--line);padding:0 7px;border-radius:999px;color:var(--ink-3);font-weight:600}
 
-/* toolbar */
+/* sections */
+.sec{padding:20px 22px;margin-bottom:16px}
+.sec-h{display:flex;align-items:baseline;gap:12px;margin-bottom:4px}
+.sec h3{margin:0;font-size:16px}
+.sec p.sub{margin:0 0 14px;color:var(--ink-2);font-size:14px}
+.note{font-size:12.5px;color:var(--ink-3);margin-top:12px}
+table.grid{width:100%;border-collapse:collapse;font-size:14px}
+table.grid th{text-align:left;font-size:12px;text-transform:uppercase;letter-spacing:.05em;color:var(--ink-3);font-weight:650;padding:8px 10px;border-bottom:1px solid var(--line)}
+table.grid td{padding:10px;border-bottom:1px solid var(--line);vertical-align:middle}
+table.grid tr:last-child td{border-bottom:none}
+.scroll{overflow-x:auto}
+.pill{display:inline-flex;align-items:center;gap:6px;font-size:12.5px;font-weight:600;padding:2px 9px;border-radius:999px;white-space:nowrap}
+.pill.ok{background:var(--good-soft);color:var(--good)}
+.pill.off{background:var(--warn-soft);color:var(--warn)}
+.pill.bad{background:var(--bad-soft);color:var(--bad)}
+.pill.neutral{background:var(--panel-2);color:var(--ink-2);border:1px solid var(--line)}
+.muted{color:var(--ink-3)}
+.row-acts{display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end}
+
+/* switch */
+.sw{width:40px;height:22px;border-radius:11px;background:var(--line-2);position:relative;flex:none;border:none;cursor:pointer;transition:background .2s;padding:0}
+.sw::after{content:"";position:absolute;top:3px;left:3px;width:16px;height:16px;border-radius:50%;background:#fff;box-shadow:0 1px 3px rgba(0,0,0,.25);transition:left .2s}
+.sw.on{background:var(--good)}
+.sw.on::after{left:21px}
+.sw:disabled{opacity:.5;cursor:not-allowed}
+
+/* ways in */
+.way{display:grid;grid-template-columns:40px 1fr auto auto;gap:14px;align-items:center;padding:12px 0;border-bottom:1px solid var(--line)}
+.way:last-child{border-bottom:none}
+.way .ic{width:40px;height:40px;border-radius:11px;background:var(--panel-2);border:1px solid var(--line);display:grid;place-items:center;color:var(--ink-2)}
+.way .ic svg{width:18px;height:18px}
+.way small{display:block;color:var(--ink-3);font-size:12.5px}
+
+/* create form */
+.create{display:grid;grid-template-columns:1fr 160px auto;gap:10px;align-items:end;margin-bottom:16px}
+.create label.f{margin-top:0}
+
+/* chips + toolbar */
 .toolbar{display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin-bottom:14px}
 .search{position:relative;flex:1;min-width:220px}
 .search svg{position:absolute;left:12px;top:50%;transform:translateY(-50%);width:16px;height:16px;color:var(--ink-3)}
 .search input{padding-left:36px}
-.chips{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:16px}
+.chips{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:14px}
 .chip{border:1px solid var(--line-2);background:var(--panel);border-radius:999px;padding:4px 12px;font-size:13px;cursor:pointer;color:var(--ink-2)}
 .chip.on{background:var(--ink);color:var(--bg);border-color:var(--ink)}
 .chip .n{opacity:.6;margin-left:4px}
@@ -100,19 +129,18 @@ input.t:focus,textarea.t:focus{border-color:var(--accent);box-shadow:0 0 0 3px v
 .banner svg{flex:none;width:18px;height:18px}
 .banner .btn{margin-left:auto;background:transparent;border-color:currentColor;color:inherit;padding:5px 12px;font-size:13px}
 
+/* memories */
 .day{font-size:12px;font-weight:650;color:var(--ink-3);text-transform:uppercase;letter-spacing:.06em;margin:22px 0 8px}
-.turn{padding:14px 16px;display:grid;grid-template-columns:auto 1fr auto;gap:12px;margin-bottom:8px;transition:border-color .15s}
-.turn:hover{border-color:var(--line-2)}
+.turn{padding:14px 16px;display:grid;grid-template-columns:auto 1fr auto;gap:12px;margin-bottom:8px}
 .turn .sel{display:none;padding-top:2px}
 .selecting .turn .sel{display:block}
 .turn input[type=checkbox]{width:16px;height:16px;accent-color:var(--accent)}
-.line{display:grid;grid-template-columns:22px 1fr;gap:8px;align-items:start}
+.line{display:grid;grid-template-columns:24px 1fr;gap:8px;align-items:start}
 .line+.line{margin-top:8px}
-.who-ic{width:22px;height:22px;border-radius:50%;display:grid;place-items:center;font-size:10px;font-weight:700}
+.who-ic{width:24px;height:22px;border-radius:6px;display:grid;place-items:center;font-size:9.5px;font-weight:700}
 .who-ic.you{background:var(--accent-soft);color:var(--accent)}
-.who-ic.ai{background:var(--panel-2);color:var(--ink-3);border:1px solid var(--line);font-size:9.5px}
+.who-ic.ai{background:var(--panel-2);color:var(--ink-3);border:1px solid var(--line)}
 .msg{white-space:pre-wrap;word-break:break-word}
-.msg.you{color:var(--ink)}
 .msg.ai{color:var(--ink-2);font-size:14px}
 .clamp3{display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden}
 .clamp2{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
@@ -122,67 +150,52 @@ input.t:focus,textarea.t:focus{border-color:var(--accent);box-shadow:0 0 0 3px v
 .badge.auto{color:var(--warn);background:var(--warn-soft);border-color:transparent}
 .badge.mine{color:var(--good);background:var(--good-soft);border-color:transparent}
 .acts{display:flex;align-items:flex-start;gap:4px;opacity:.45;transition:opacity .15s}
-.turn:hover .acts{opacity:1}
+.turn:hover .acts,.hit .acts{opacity:1}
 .icon-btn{border:none;background:none;border-radius:8px;width:32px;height:32px;display:grid;place-items:center;cursor:pointer;color:var(--ink-3)}
 .icon-btn:hover{background:var(--bad-soft);color:var(--bad)}
 .icon-btn svg{width:16px;height:16px}
 .confirm{display:flex;gap:6px;align-items:center;font-size:13px;color:var(--bad)}
 .confirm .btn{padding:4px 10px;font-size:13px}
-
-.empty{text-align:center;padding:56px 20px;color:var(--ink-3)}
-.empty svg{width:44px;height:44px;opacity:.5;margin-bottom:10px}
+.empty{text-align:center;padding:48px 20px;color:var(--ink-3)}
 .empty h3{color:var(--ink-2);margin:0 0 4px;font-size:16px}
-
 .selbar{position:sticky;bottom:18px;margin-top:16px;display:flex;align-items:center;gap:12px;padding:10px 12px 10px 18px;background:var(--ink);color:var(--bg);border-radius:12px;box-shadow:var(--shadow)}
 .selbar .btn{background:transparent;color:inherit;border-color:color-mix(in srgb,var(--bg) 30%,transparent)}
 .selbar .btn.danger.solid{background:var(--bad);border-color:var(--bad);color:#fff}
 
 /* recall */
-.recall-intro{color:var(--ink-2);margin:0 0 14px;max-width:640px}
 .hit{padding:14px 16px;margin-bottom:8px;display:grid;grid-template-columns:64px 1fr auto;gap:14px;align-items:start}
 .score{font-family:var(--mono);font-size:12px;color:var(--ink-3)}
 .bar{height:5px;border-radius:3px;background:var(--line);margin-top:6px;overflow:hidden}
 .bar i{display:block;height:100%;background:var(--accent);border-radius:3px}
 .prompt-preview{margin-top:18px;padding:14px 16px;font-family:var(--mono);font-size:12.5px;white-space:pre-wrap;color:var(--ink-2);background:var(--panel-2);border:1px dashed var(--line-2);border-radius:12px}
 
-/* settings */
-.grid2{display:grid;grid-template-columns:1fr 1fr;gap:16px}
-.sec{padding:20px 22px}
-.sec h3{margin:0 0 4px;font-size:16px}
-.sec p{margin:0 0 14px;color:var(--ink-2);font-size:14px}
-dl.kv{display:grid;grid-template-columns:auto 1fr;gap:8px 18px;margin:0;font-size:14px}
-dl.kv dt{color:var(--ink-3)}
-dl.kv dd{margin:0;word-break:break-all}
-dl.kv code{font-family:var(--mono);font-size:13px}
-.access{display:flex;flex-direction:column;gap:10px}
-.acc{display:flex;gap:12px;align-items:center}
-.acc .ic{width:34px;height:34px;border-radius:10px;background:var(--panel-2);border:1px solid var(--line);display:grid;place-items:center;color:var(--ink-2)}
-.acc .ic svg{width:17px;height:17px}
-.acc small{display:block;color:var(--ink-3);font-family:var(--mono);font-size:12px}
-.dz{border-color:color-mix(in srgb,var(--bad) 35%,var(--line))}
-.dz h3{color:var(--bad)}
+/* trust */
+.trust{display:grid;grid-template-columns:repeat(3,1fr);gap:12px}
+.tbox{border:1px solid var(--line);border-radius:12px;padding:14px 16px;background:var(--panel-2)}
+.tbox h4{margin:0 0 6px;font-size:13px;text-transform:uppercase;letter-spacing:.05em;color:var(--ink-3)}
+.tbox div{font-size:14px}
+.tbox small{display:block;color:var(--ink-3);font-size:12.5px;margin-top:2px}
 
-/* dialog + toast */
 dialog{border:none;border-radius:16px;padding:0;background:var(--panel);color:var(--ink);box-shadow:0 20px 60px rgba(0,0,0,.3);width:min(520px,calc(100vw - 32px))}
 dialog::backdrop{background:rgba(10,10,20,.45)}
 .dlg{padding:24px}
 .dlg h3{margin:0 0 6px;font-size:18px}
 .dlg p{margin:0 0 14px;color:var(--ink-2);font-size:14px}
 .dlg .row{display:flex;justify-content:flex-end;gap:8px;margin-top:16px}
-.toast{position:fixed;left:50%;bottom:24px;transform:translateX(-50%) translateY(20px);background:var(--ink);color:var(--bg);padding:10px 16px;border-radius:10px;font-size:14px;opacity:0;transition:all .25s;pointer-events:none;z-index:50}
+.check{display:flex;gap:8px;align-items:center;font-size:14px;margin:4px 0 12px}
+.toast{position:fixed;left:50%;bottom:24px;transform:translateX(-50%) translateY(20px);background:var(--ink);color:var(--bg);padding:10px 16px;border-radius:10px;font-size:14px;opacity:0;transition:all .25s;pointer-events:none;z-index:50;max-width:calc(100vw - 32px)}
 .toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
 .spin{width:18px;height:18px;border:2px solid var(--line-2);border-top-color:var(--accent);border-radius:50%;animation:s .7s linear infinite;display:inline-block}
 @keyframes s{to{transform:rotate(360deg)}}
-.loading{display:flex;justify-content:center;padding:48px}
+.loading{display:flex;justify-content:center;padding:40px}
 
 @media (max-width:760px){
-  .space{grid-template-columns:1fr}
-  .switch{min-width:0}
-  .grid2{grid-template-columns:1fr}
-  .who .name{display:none}
-  .brand small{display:none}
   .wrap{padding:0 16px}
-  .space{padding:20px}
+  .who .name,.brand small{display:none}
+  .create{grid-template-columns:1fr}
+  .trust{grid-template-columns:1fr}
+  .way{grid-template-columns:40px 1fr auto}
+  .way .pill{display:none}
   .hit{grid-template-columns:1fr}
 }
 </style>
@@ -193,22 +206,22 @@ dialog::backdrop{background:rgba(10,10,20,.45)}
   <div class="wrap">
     <div class="brand">
       <div class="mark"><svg viewBox="0 0 16 16" fill="none" stroke="#fff" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3.5 12V4.5l4.5 4 4.5-4V12"/></svg></div>
-      My Memory <small>· MemMachine</small>
+      MemMachine Platform <small>· access &amp; memory</small>
     </div>
     <div class="spacer"></div>
     <div class="who hidden" id="who">
       <span class="name" id="who-name"></span>
+      <span class="role hidden" id="who-role"></span>
       <div class="avatar" id="who-av"></div>
       <button class="btn ghost" id="logout">Sign out</button>
     </div>
   </div>
 </header>
 
-<!-- sign in -->
 <section id="v-login" class="center hidden">
   <form class="card login" id="login-form" autocomplete="on">
     <h1>Sign in</h1>
-    <p class="lead">Use your Open WebUI account to see what your assistant remembers about you.</p>
+    <p class="lead">Use your Open WebUI account. The platform decides what you can see and do.</p>
     <label class="f" for="email">Email</label>
     <input class="t" id="email" type="email" autocomplete="username" required autofocus>
     <label class="f" for="password">Password</label>
@@ -217,66 +230,77 @@ dialog::backdrop{background:rgba(10,10,20,.45)}
     <div class="err" id="login-err"></div>
     <div class="fine">
       <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="3" y="7" width="10" height="7" rx="1.5"/><path d="M5.5 7V5a2.5 2.5 0 015 0v2"/></svg>
-      <span>Your password is checked by Open WebUI and never stored here. You only ever see your own memory.</span>
+      <span>Your password is checked by Open WebUI and never stored here. Your platform role is set by a platform admin, not by Open WebUI.</span>
     </div>
   </form>
 </section>
 
-<!-- not enrolled -->
-<section id="v-enroll" class="center hidden">
-  <div class="card login" style="max-width:460px">
-    <div class="eyebrow">Memory</div>
-    <h1 style="margin-top:6px">Memory isn't on for you yet</h1>
-    <p class="lead">When it's on, chats that use a <code>memmachine-</code> model remember what you tell them, and recall it in later conversations. You can see, edit, export or delete everything here, and turn it off at any time.</p>
-    <button class="btn primary" id="enroll-btn" style="width:100%;justify-content:center;padding:11px">Turn on memory</button>
+<section id="v-none" class="center hidden">
+  <div class="card login" style="max-width:480px">
+    <h1>No memory account yet</h1>
+    <p class="lead" id="none-text"></p>
+    <p class="lead" style="margin:0">Until then, chats work normally; nothing is remembered.</p>
   </div>
 </section>
 
-<!-- main -->
 <main id="v-main" class="hidden">
   <div class="wrap">
 
-    <section class="card space">
-      <div>
-        <div class="eyebrow">Your memory space</div>
-        <h2><span id="space-kind">Personal</span></h2>
-        <span class="ns" id="ns" title="Copy namespace">
-          <span id="ns-text"></span>
-          <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="5" y="5" width="8" height="9" rx="1.5"/><path d="M3 11V3.5A1.5 1.5 0 014.5 2H10"/></svg>
-        </span>
-        <div class="stats">
-          <span><b id="st-turns">0</b> conversations remembered</span>
-          <span id="st-last"></span>
-          <span id="st-from"></span>
+    <section class="card ident">
+      <div class="big" id="id-av"></div>
+      <div style="flex:1;min-width:240px">
+        <h2 id="id-email"></h2>
+        <div class="facts">
+          <span><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M8 1.5l5 2v4c0 3.2-2.2 5.6-5 7-2.8-1.4-5-3.8-5-7v-4z"/><path d="M5.8 8l1.6 1.6 2.9-3" stroke-linecap="round" stroke-linejoin="round"/></svg>Identity checked by <b id="id-via">Open WebUI</b></span>
+          <span>Platform role <span class="role" id="id-role"></span></span>
+          <span>Namespace <code id="id-ns"></code></span>
         </div>
-      </div>
-      <div class="switch" id="switch" role="switch" tabindex="0" aria-checked="true">
-        <div class="txt">
-          <div class="st" id="sw-state">Memory on</div>
-          <div class="sub" id="sw-sub"></div>
-        </div>
-        <div class="tog"></div>
       </div>
     </section>
 
     <nav class="tabs" role="tablist">
-      <button class="tab on" data-tab="memories">Memories <span class="count" id="tab-count">0</span></button>
+      <button class="tab on" data-tab="access">Access</button>
+      <button class="tab" data-tab="memories">Memories <span class="count" id="tab-count">0</span></button>
       <button class="tab" data-tab="recall">What would it recall?</button>
-      <button class="tab" data-tab="settings">Settings</button>
+      <button class="tab hidden" data-tab="admin" id="tab-admin">Admin</button>
     </nav>
 
-    <!-- memories -->
-    <section id="t-memories">
+    <!-- ACCESS -->
+    <section id="t-access">
+      <div class="card sec">
+        <div class="sec-h"><h3>Your namespaces</h3></div>
+        <p class="sub">Where your memories live. Only you can reach a personal namespace.</p>
+        <div class="scroll"><table class="grid">
+          <thead><tr><th>Namespace</th><th>Type</th><th>Memory</th><th>Stored</th><th style="text-align:right">Data</th></tr></thead>
+          <tbody id="ns-rows"></tbody>
+        </table></div>
+        <div class="note">One personal namespace per person for now. More arrive with per-project grants: the hook names the project, the platform checks the grant.</div>
+      </div>
+
+      <div class="card sec">
+        <div class="sec-h"><h3>Ways into your memory</h3></div>
+        <p class="sub">Each place a request can come from, and how the platform knows it is you. Switch one off and requests from it carry on without memory; the others are unaffected.</p>
+        <div id="ways"></div>
+      </div>
+
+      <div class="card sec">
+        <div class="sec-h"><h3>Access history</h3><span class="muted" style="font-size:13px">every decision the platform made about your memory</span></div>
+        <div class="scroll"><table class="grid">
+          <thead><tr><th>When</th><th>Action</th><th>Way in</th><th>Result</th><th>Why</th></tr></thead>
+          <tbody id="hist-rows"></tbody>
+        </table></div>
+      </div>
+    </section>
+
+    <!-- MEMORIES -->
+    <section id="t-memories" class="hidden">
       <div class="toolbar">
         <div class="search">
           <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="7" cy="7" r="4.5"/><path d="M10.5 10.5L14 14" stroke-linecap="round"/></svg>
           <input class="t" id="filter" placeholder="Search your memories…">
         </div>
         <button class="btn" id="select-btn">Select</button>
-        <button class="btn primary" id="add-btn">
-          <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M8 3v10M3 8h10"/></svg>
-          Add a memory
-        </button>
+        <button class="btn primary" id="add-btn">+ Add a memory</button>
       </div>
       <div class="chips" id="chips"></div>
       <div class="banner hidden" id="auto-banner">
@@ -294,9 +318,9 @@ dialog::backdrop{background:rgba(10,10,20,.45)}
       </div>
     </section>
 
-    <!-- recall -->
+    <!-- RECALL -->
     <section id="t-recall" class="hidden">
-      <p class="recall-intro">Type something as if you were starting a chat. You'll see exactly which memories the assistant would be given before it answers — the same lookup that runs on every chat turn.</p>
+      <p class="sub" style="color:var(--ink-2);max-width:640px;margin:0 0 14px">Type something as if you were starting a chat. You'll see exactly which memories the assistant would be given before it answers.</p>
       <form class="toolbar" id="recall-form">
         <div class="search">
           <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="7" cy="7" r="4.5"/><path d="M10.5 10.5L14 14" stroke-linecap="round"/></svg>
@@ -307,38 +331,39 @@ dialog::backdrop{background:rgba(10,10,20,.45)}
       <div id="recall-out"></div>
     </section>
 
-    <!-- settings -->
-    <section id="t-settings" class="hidden">
-      <div class="grid2">
-        <div class="card sec">
-          <h3>Memory space</h3>
-          <p>Where your memories are kept. For now everyone has one personal space.</p>
-          <dl class="kv">
-            <dt>Type</dt><dd>Personal — only you</dd>
-            <dt>Owner</dt><dd id="kv-owner"></dd>
-            <dt>Organization</dt><dd><code id="kv-org"></code></dd>
-            <dt>Project</dt><dd><code id="kv-proj"></code></dd>
-            <dt>Stored messages</dt><dd id="kv-eps"></dd>
-          </dl>
+    <!-- ADMIN -->
+    <section id="t-admin" class="hidden">
+      <div class="card sec">
+        <div class="sec-h"><h3>Accounts</h3><span class="muted" style="font-size:13px" id="acct-count"></span></div>
+        <p class="sub">Create an account by email. The platform then looks up that person's personal keys in LiteLLM itself, with its own read-only key, so a key can never be attached to the wrong owner.</p>
+        <form class="create" id="create-form">
+          <div><label class="f" for="new-email">Email</label><input class="t" id="new-email" type="email" placeholder="dana@corp.example" required></div>
+          <div><label class="f" for="new-role">Role</label><select class="t" id="new-role"><option value="user">User</option><option value="admin">Admin</option></select></div>
+          <button class="btn primary" type="submit" id="create-btn">Create account</button>
+        </form>
+        <div class="scroll"><table class="grid">
+          <thead><tr><th>Person</th><th>Role</th><th>Memory</th><th>Ways in</th><th>Last access</th><th style="text-align:right">Actions</th></tr></thead>
+          <tbody id="acct-rows"></tbody>
+        </table></div>
+      </div>
+
+      <div class="card sec">
+        <div class="sec-h"><h3>What the platform trusts</h3></div>
+        <p class="sub">The callers and credentials every decision starts from.</p>
+        <div class="trust" id="trust"></div>
+      </div>
+
+      <div class="card sec">
+        <div class="sec-h"><h3>Audit log</h3><span class="muted" style="font-size:13px">newest first</span></div>
+        <div class="toolbar" style="margin-top:8px">
+          <div class="search"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="7" cy="7" r="4.5"/><path d="M10.5 10.5L14 14" stroke-linecap="round"/></svg><input class="t" id="audit-q" placeholder="Filter by person, reason, key…"></div>
+          <button class="btn" id="audit-refresh">Refresh</button>
         </div>
-        <div class="card sec">
-          <h3>Where your memory is used</h3>
-          <p>Requests from these places can recall and save to this space.</p>
-          <div class="access" id="access"></div>
-        </div>
-        <div class="card sec">
-          <h3>Your data</h3>
-          <p>Download everything in this space as JSON.</p>
-          <a class="btn" href="/portal/api/export" download>
-            <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M8 2.5v8M4.5 7L8 10.5 11.5 7M3 13.5h10"/></svg>
-            Export memories
-          </a>
-        </div>
-        <div class="card sec dz">
-          <h3>Delete all memories</h3>
-          <p>Permanently removes every memory in this space. Chats keep working; the assistant just starts fresh.</p>
-          <button class="btn danger" id="clear-btn">Delete everything…</button>
-        </div>
+        <div class="chips" id="audit-chips"></div>
+        <div class="scroll"><table class="grid">
+          <thead><tr><th>When</th><th>Person</th><th>Action</th><th>Way in</th><th>Result</th><th>Why</th></tr></thead>
+          <tbody id="audit-rows"></tbody>
+        </table></div>
       </div>
     </section>
   </div>
@@ -351,22 +376,26 @@ dialog::backdrop{background:rgba(10,10,20,.45)}
     <h3>Add a memory</h3>
     <p>Write it the way you'd tell a colleague. The assistant will recall it in future chats.</p>
     <textarea class="t" id="add-text" rows="4" maxlength="4000" placeholder="I prefer metric units and short answers."></textarea>
-    <div class="row">
-      <button class="btn" value="cancel" formnovalidate>Cancel</button>
-      <button class="btn primary" id="add-save" value="save">Remember this</button>
-    </div>
+    <div class="row"><button class="btn" value="cancel" formnovalidate>Cancel</button><button class="btn primary" id="add-save" value="save">Remember this</button></div>
   </form>
 </dialog>
 
 <dialog id="dlg-clear">
   <form class="dlg" method="dialog" id="clear-form">
-    <h3>Delete all memories?</h3>
-    <p>This removes <b id="clear-n"></b> entries and can't be undone. Type <b>delete</b> to confirm.</p>
+    <h3>Delete everything in this namespace?</h3>
+    <p>This removes <b id="clear-n"></b> stored messages and can't be undone. Type <b>delete</b> to confirm.</p>
     <input class="t" id="clear-confirm" autocomplete="off">
-    <div class="row">
-      <button class="btn" value="cancel" formnovalidate>Cancel</button>
-      <button class="btn danger solid" id="clear-go" value="go" disabled>Delete everything</button>
-    </div>
+    <div class="row"><button class="btn" value="cancel" formnovalidate>Cancel</button><button class="btn danger solid" id="clear-go" value="go" disabled>Delete everything</button></div>
+  </form>
+</dialog>
+
+<dialog id="dlg-del">
+  <form class="dlg" method="dialog" id="del-form">
+    <h3>Delete <span id="del-who"></span>?</h3>
+    <p>Their account and key links are removed at once: their next chat has no memory. Type their email to confirm.</p>
+    <label class="check"><input type="checkbox" id="del-mem"> Also delete everything in their namespace</label>
+    <input class="t" id="del-confirm" autocomplete="off">
+    <div class="row"><button class="btn" value="cancel" formnovalidate>Cancel</button><button class="btn danger solid" id="del-go" value="go" disabled>Delete account</button></div>
   </form>
 </dialog>
 
@@ -392,7 +421,7 @@ function h(tag, attrs = {}, ...kids) {
   }
   return el;
 }
-const svg = (d, w = 16) => {
+const svg = d => {
   const s = document.createElementNS("http://www.w3.org/2000/svg", "svg");
   s.setAttribute("viewBox", "0 0 16 16"); s.setAttribute("fill", "none");
   s.setAttribute("stroke", "currentColor"); s.setAttribute("stroke-width", "1.6");
@@ -403,110 +432,256 @@ const ICON = {
   trash: '<path d="M3 4.5h10M6.5 4.5V3h3v1.5M4.5 4.5l.6 8.5h5.8l.6-8.5"/>',
   chat: '<path d="M2.5 4a1.5 1.5 0 011.5-1.5h8A1.5 1.5 0 0113.5 4v5.5A1.5 1.5 0 0112 11H7l-3 2.5V11a1.5 1.5 0 01-1.5-1.5z"/>',
   key: '<circle cx="5.5" cy="10.5" r="2.5"/><path d="M7.3 8.7L13 3M11 5l1.5 1.5"/>',
-  brain: '<path d="M8 3v10M5.5 3.5a2 2 0 00-2 2v.5a2 2 0 000 4v.5a2 2 0 002 2M10.5 3.5a2 2 0 012 2v.5a2 2 0 010 4v.5a2 2 0 01-2 2"/>',
 };
 
 async function api(path, opts = {}) {
   const res = await fetch(path, {
-    method: opts.body ? "POST" : (opts.method || "GET"),
-    credentials: "same-origin",
+    method: opts.body ? "POST" : "GET", credentials: "same-origin",
     headers: { "Content-Type": "application/json", "X-MM-Portal": "1" },
     body: opts.body ? JSON.stringify(opts.body) : undefined,
   });
   if (res.status === 401 && !opts.noRedirect) { show("login"); throw new Error("signed out"); }
-  let data = null;
-  try { data = await res.json(); } catch {}
+  let data = null; try { data = await res.json(); } catch {}
   if (!res.ok) throw new Error((data && data.detail) || `Request failed (${res.status})`);
   return data;
 }
+function toast(msg) { const t = $("#toast"); t.textContent = msg; t.classList.add("show"); clearTimeout(toast._t); toast._t = setTimeout(() => t.classList.remove("show"), 2800); }
 
-function toast(msg) {
-  const t = $("#toast"); t.textContent = msg; t.classList.add("show");
-  clearTimeout(toast._t); toast._t = setTimeout(() => t.classList.remove("show"), 2600);
-}
-
-/* ---------- time ---------- */
-function when(iso) {
-  if (!iso) return "";
-  const d = new Date(iso), s = (Date.now() - d) / 1000;
+function when(v) {
+  if (!v) return "—";
+  const d = typeof v === "number" ? new Date(v * 1000) : new Date(v), s = (Date.now() - d) / 1000;
   if (s < 60) return "just now";
   if (s < 3600) return `${Math.floor(s / 60)} min ago`;
   if (s < 86400) return `${Math.floor(s / 3600)} h ago`;
-  return d.toLocaleDateString(undefined, { month: "short", day: "numeric" }) + ", " +
-         d.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
+  return d.toLocaleDateString(undefined, { month: "short", day: "numeric" }) + ", " + d.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
 }
 function dayLabel(iso) {
   const d = new Date(iso), today = new Date(); today.setHours(0, 0, 0, 0);
   const that = new Date(d); that.setHours(0, 0, 0, 0);
   const diff = (today - that) / 86400000;
-  if (diff === 0) return "Today";
-  if (diff === 1) return "Yesterday";
+  if (diff === 0) return "Today"; if (diff === 1) return "Yesterday";
   return d.toLocaleDateString(undefined, { weekday: "long", month: "short", day: "numeric" });
+}
+const swBtn = (on, onclick, label) => h("button", { class: "sw" + (on ? " on" : ""), role: "switch", "aria-checked": String(on), "aria-label": label, onclick });
+
+/* decisions, in words */
+function result(d) {
+  if (d.decision === "allow") return h("span", { class: "pill ok" }, "allowed");
+  if (d.decision === "not-enrolled") return h("span", { class: "pill off" }, "no memory");
+  return h("span", { class: "pill bad" }, `refused ${d.status || ""}`.trim());
+}
+function action(op) {
+  return { search: "recall", store: "save" }[op] || (op || "").replace("admin:", "admin · ");
+}
+function wayIn(d) {
+  if (d.via === "app-token") return "Open WebUI";
+  if (d.via === "personal-key") return `key · ${d.key_label || ""}`;
+  if ((d.op || "").startsWith("admin:")) return "portal";
+  return d.key_label ? `key · ${d.key_label}` : "—";
 }
 
 /* ---------- state ---------- */
-const S = { me: null, turns: [], chip: "all", q: "", selecting: false, sel: new Set(), tab: "memories" };
+const S = { me: null, turns: [], chip: "all", q: "", selecting: false, sel: new Set(), audit: [], achip: "all", users: [], hist: [], histN: 20, auditN: 30 };
 
 function show(view) {
-  for (const v of ["login", "enroll", "main", "loading"]) $(`#v-${v}`).classList.toggle("hidden", v !== view);
+  for (const v of ["login", "none", "main", "loading"]) $(`#v-${v}`).classList.toggle("hidden", v !== view);
   $("#who").classList.toggle("hidden", view === "login" || view === "loading");
 }
 
 async function boot() {
   show("loading");
-  try { S.me = await api("/portal/api/me", { noRedirect: true }); }
-  catch { show("login"); return; }
-  const name = S.me.name || S.me.email;
-  $("#who-name").textContent = S.me.email;
-  $("#who-av").textContent = (name.trim()[0] || "?").toUpperCase();
-  if (!S.me.enrolled) { show("enroll"); return; }
-  renderSpace();
-  show("main");
-  await loadTurns();
-}
-
-/* ---------- space card ---------- */
-function renderSpace() {
-  const m = S.me, sp = m.space;
-  $("#ns-text").textContent = `${sp.org_id} / ${sp.project_id}`;
-  $("#kv-owner").textContent = m.email;
-  $("#kv-org").textContent = sp.org_id;
-  $("#kv-proj").textContent = sp.project_id;
-  $("#kv-eps").textContent = sp.episodes;
-  const sw = $("#switch");
-  sw.classList.toggle("on", m.enabled);
-  sw.setAttribute("aria-checked", String(m.enabled));
-  $("#sw-state").textContent = m.enabled ? "Memory on" : "Memory paused";
-  $("#sw-sub").textContent = m.enabled
-    ? "Your assistant recalls and saves in chats that use memmachine- models."
-    : "Chats still work. Nothing is recalled or saved until you turn it back on.";
-  const acc = $("#access"); acc.replaceChildren();
-  for (const a of m.access) {
-    acc.append(h("div", { class: "acc" },
-      h("div", { class: "ic" }, svg(a.kind === "app" ? ICON.chat : ICON.key)),
-      h("div", {}, a.label, h("small", {}, a.detail))));
+  try { S.me = await api("/portal/api/me", { noRedirect: true }); } catch { show("login"); return; }
+  const m = S.me;
+  $("#who-name").textContent = m.email;
+  $("#who-av").textContent = ((m.name || m.email).trim()[0] || "?").toUpperCase();
+  if (!m.enrolled) {
+    $("#who-role").classList.add("hidden");
+    $("#none-text").textContent = m.admins && m.admins.length
+      ? `You're signed in, but the platform has no account for ${m.email}. A platform admin creates accounts: ${m.admins.join(", ")}.`
+      : `You're signed in, but the platform has no account for ${m.email}. Ask a platform admin to create one.`;
+    show("none"); return;
   }
-  if (!m.access.length) acc.append(h("p", {}, "Nothing connected yet."));
+  const isAdmin = m.role === "admin";
+  $("#who-role").textContent = m.role; $("#who-role").className = "role" + (isAdmin ? " admin" : "");
+  $("#id-av").textContent = $("#who-av").textContent;
+  $("#id-email").textContent = m.email;
+  $("#id-via").textContent = m.signed_in_via || "Open WebUI";
+  $("#id-role").textContent = m.role; $("#id-role").className = "role" + (isAdmin ? " admin" : "");
+  const ns = m.namespaces[0]; $("#id-ns").textContent = `${ns.org_id} / ${ns.project_id}`;
+  $("#tab-admin").classList.toggle("hidden", !isAdmin);
+  renderAccess();
+  show("main");
+  loadHistory(); loadTurns();
+  if (isAdmin && S.tab === "admin") loadAdmin();
 }
 
-function renderStats() {
-  const real = S.turns.filter(t => !t.automatic);
-  $("#st-turns").textContent = real.length;
-  $("#tab-count").textContent = real.length;
-  $("#st-last").textContent = real.length ? `Last saved ${when(real[0].at)}` : "";
-  const sources = [...new Set(real.map(t => t.source))].filter(s => s !== "Chat");
-  $("#st-from").textContent = sources.length ? `From ${sources.join(", ")}` : "";
+/* ---------- access ---------- */
+function renderAccess() {
+  const m = S.me, rows = $("#ns-rows"); rows.replaceChildren();
+  for (const ns of m.namespaces) {
+    rows.append(h("tr", {},
+      h("td", {}, h("code", {}, `${ns.org_id} / ${ns.project_id}`)),
+      h("td", {}, ns.kind, h("div", { class: "muted", style: "font-size:12.5px" }, "only you")),
+      h("td", {}, h("div", { style: "display:flex;gap:10px;align-items:center" },
+        swBtn(ns.enabled, () => toggleMemory(!ns.enabled), "Memory on or off"),
+        h("span", { class: ns.enabled ? "pill ok" : "pill off" }, ns.enabled ? "on" : "paused"))),
+      h("td", {}, `${ns.episodes} messages`),
+      h("td", {}, h("div", { class: "row-acts" },
+        h("a", { class: "btn sm", href: "/portal/api/export", download: true }, "Export"),
+        h("button", { class: "btn sm danger", onclick: () => openClear(ns.episodes) }, "Delete all")))));
+  }
+  const ways = $("#ways"); ways.replaceChildren();
+  if (!m.access.length) ways.append(h("p", { class: "muted" }, "Nothing can reach your memory yet."));
+  for (const a of m.access) {
+    const on = a.enabled && m.namespaces[0].enabled;
+    ways.append(h("div", { class: "way" },
+      h("div", { class: "ic" }, svg(a.kind === "app" ? ICON.chat : ICON.key)),
+      h("div", {}, h("b", {}, a.label), h("small", {}, a.detail),
+        h("small", {}, a.kind === "app"
+          ? "The platform verifies Open WebUI's signature on your token, then reads your email from it."
+          : "LiteLLM checks the key; the platform knows it is yours from LiteLLM's own record.")),
+      h("span", { class: on ? "pill ok" : "pill off" }, !m.namespaces[0].enabled ? "memory paused" : a.enabled ? "can reach memory" : "switched off"),
+      swBtn(a.enabled, () => toggleWay(a), `Allow ${a.label}`)));
+  }
 }
+async function toggleMemory(on) {
+  try { await api("/portal/api/switch", { body: { enabled: on } }); S.me.namespaces[0].enabled = on; renderAccess(); toast(on ? "Memory on" : "Memory paused: chats keep working"); }
+  catch (e) { toast(e.message); }
+}
+async function toggleWay(a) {
+  try { await api("/portal/api/access", { body: { id: a.id, enabled: !a.enabled } }); a.enabled = !a.enabled; renderAccess(); toast(`${a.label}: ${a.enabled ? "can reach your memory" : "switched off"}`); }
+  catch (e) { toast(e.message); }
+}
+function renderHistory() {
+  const rows = $("#hist-rows"); rows.replaceChildren();
+  if (!S.hist.length) { rows.append(h("tr", {}, h("td", { colspan: 5, class: "muted" }, "No requests yet. Chat with a memmachine- model and they appear here."))); return; }
+  for (const d of S.hist.slice(0, S.histN)) rows.append(h("tr", {},
+    h("td", { class: "muted" }, when(d.at)), h("td", {}, action(d.op)), h("td", {}, wayIn(d)),
+    h("td", {}, result(d)), h("td", { class: "muted" }, d.decision === "allow" ? (d.namespace || "") : (d.reason || ""))));
+  if (S.hist.length > S.histN) rows.append(moreRow(5, S.hist.length - S.histN, () => { S.histN += 20; renderHistory(); }));
+}
+function moreRow(cols, left, onclick) {
+  return h("tr", {}, h("td", { colspan: cols, style: "text-align:center" }, h("button", { class: "btn sm", onclick }, `Show more (${left} older)`)));
+}
+async function loadHistory() {
+  const rows = $("#hist-rows"); rows.replaceChildren(h("tr", {}, h("td", { colspan: 5 }, h("div", { class: "loading" }, h("span", { class: "spin" })))));
+  try {
+    const { items } = await api("/portal/api/history");
+    S.hist = items; S.histN = 20; renderHistory();
+  } catch (e) { rows.replaceChildren(h("tr", {}, h("td", { colspan: 5 }, e.message))); }
+}
+
+/* ---------- admin ---------- */
+async function loadAdmin() {
+  loadUsers(); loadTrust(); loadAudit();
+}
+async function loadUsers() {
+  const rows = $("#acct-rows");
+  try {
+    const { users } = await api("/portal/api/admin/users");
+    S.users = users; rows.replaceChildren();
+    $("#acct-count").textContent = `${users.length} ${users.length === 1 ? "account" : "accounts"}`;
+    for (const u of users) {
+      const self = u.email.toLowerCase() === S.me.email.toLowerCase();
+      const ways = [h("span", { class: u.allow_app ? "pill neutral" : "pill off" }, "Open WebUI" + (u.allow_app ? "" : " · off"))];
+      for (const k of u.keys) ways.push(h("span", { class: k.enabled ? "pill neutral" : "pill off", title: `hash ${k.hash}…` }, k.label + (k.enabled ? "" : " · off")));
+      rows.append(h("tr", {},
+        h("td", {}, h("b", {}, u.email), self ? h("span", { class: "muted" }, "  (you)") : null, h("div", {}, h("code", { class: "muted" }, u.namespace))),
+        h("td", {}, h("span", { class: "role" + (u.role === "admin" ? " admin" : "") }, u.role)),
+        h("td", {}, swBtn(u.enabled, () => adminUpdate(u.email, { enabled: !u.enabled }), `Memory for ${u.email}`)),
+        h("td", {}, h("div", { style: "display:flex;gap:6px;flex-wrap:wrap" }, ways)),
+        h("td", { class: "muted" }, when(u.last_seen)),
+        h("td", {}, h("div", { class: "row-acts" },
+          h("button", { class: "btn sm", onclick: () => adminSync(u.email), title: "Look up this person's keys in LiteLLM again" }, "Sync keys"),
+          h("button", { class: "btn sm", disabled: self, onclick: () => adminUpdate(u.email, { role: u.role === "admin" ? "user" : "admin" }) }, u.role === "admin" ? "Make user" : "Make admin"),
+          h("button", { class: "btn sm danger", disabled: self, onclick: () => openDelete(u.email) }, "Delete")))));
+    }
+  } catch (e) { rows.replaceChildren(h("tr", {}, h("td", { colspan: 6 }, e.message))); }
+}
+async function adminUpdate(email, change) {
+  try { await api("/portal/api/admin/users/update", { body: { email, ...change } }); toast(`${email} updated`); loadUsers(); loadAudit(); if (email === S.me.email) boot(); }
+  catch (e) { toast(e.message); }
+}
+async function adminSync(email) {
+  try {
+    const r = await api("/portal/api/admin/users/sync", { body: { email } });
+    toast(r.lookup !== "ok" ? "LiteLLM lookup is not configured" :
+      `Linked ${r.linked.length ? r.linked.join(", ") : "nothing new"}${r.removed.length ? "; removed " + r.removed.join(", ") : ""}`);
+    loadUsers(); loadAudit();
+  } catch (e) { toast(e.message); }
+}
+$("#create-form").addEventListener("submit", async e => {
+  e.preventDefault();
+  const email = $("#new-email").value.trim(), role = $("#new-role").value;
+  $("#create-btn").disabled = true;
+  try {
+    const r = await api("/portal/api/admin/users", { body: { email, role } });
+    const k = r.keys;
+    toast(k.lookup !== "ok" ? `Created ${email}; LiteLLM lookup not configured` :
+      `Created ${email}; ${k.linked.length ? "linked " + k.linked.join(", ") : "no personal keys in LiteLLM yet"}`);
+    $("#new-email").value = ""; loadUsers(); loadAudit();
+  } catch (err) { toast(err.message); }
+  finally { $("#create-btn").disabled = false; }
+});
+function openDelete(email) {
+  $("#del-who").textContent = email; $("#del-confirm").value = ""; $("#del-mem").checked = false; $("#del-go").disabled = true;
+  $("#dlg-del").dataset.email = email; $("#dlg-del").showModal();
+}
+$("#del-confirm").addEventListener("input", e => { $("#del-go").disabled = e.target.value.trim().toLowerCase() !== ($("#dlg-del").dataset.email || "").toLowerCase(); });
+$("#del-form").addEventListener("submit", async e => {
+  if (e.submitter && e.submitter.value !== "go") return;
+  e.preventDefault();
+  const email = $("#dlg-del").dataset.email;
+  try { const r = await api("/portal/api/admin/users/delete", { body: { email, delete_memories: $("#del-mem").checked } }); $("#dlg-del").close(); toast(`Deleted ${email}${r.memories_deleted ? `, ${r.memories_deleted} messages` : ""}`); loadUsers(); loadAudit(); }
+  catch (err) { toast(err.message); }
+});
+async function loadTrust() {
+  const box = $("#trust");
+  try {
+    const t = await api("/portal/api/admin/trust");
+    box.replaceChildren(
+      h("div", { class: "tbox" }, h("h4", {}, "LiteLLM deployments"),
+        ...(t.services.length ? t.services.map(s => h("div", {}, s, h("small", {}, "service credential, stored as a hash"))) : [h("div", { class: "muted" }, "none")])),
+      h("div", { class: "tbox" }, h("h4", {}, "Apps with signed tokens"),
+        ...(t.apps.length ? t.apps.map(a => h("div", {}, a.label, h("small", {}, `issuer ${a.issuer} · key ${a.key_hash}…`))) : [h("div", { class: "muted" }, "none")])),
+      h("div", { class: "tbox" }, h("h4", {}, "Key lookup in LiteLLM"),
+        h("div", {}, h("span", { class: t.litellm.configured ? "pill ok" : "pill off" }, t.litellm.configured ? "connected" : "not configured")),
+        h("small", {}, t.litellm.configured ? `${t.litellm.role} · ${t.litellm.url}` : "accounts get no keys automatically")));
+  } catch (e) { box.replaceChildren(h("div", {}, e.message)); }
+}
+const ACHIPS = [["all", "All"], ["allow", "Allowed"], ["not-enrolled", "No memory"], ["refused", "Refused"], ["admin", "Admin actions"]];
+async function loadAudit() {
+  try { S.audit = (await api("/portal/api/admin/audit")).items; S.auditN = 30; renderAudit(); }
+  catch (e) { $("#audit-rows").replaceChildren(h("tr", {}, h("td", { colspan: 6 }, e.message))); }
+}
+function renderAudit() {
+  const match = d => S.achip === "all" ? true : S.achip === "admin" ? (d.op || "").startsWith("admin:") : d.decision === S.achip && !(d.op || "").startsWith("admin:");
+  const chips = $("#audit-chips"); chips.replaceChildren();
+  for (const [id, label] of ACHIPS) {
+    const fn = id === "all" ? () => true : id === "admin" ? d => (d.op || "").startsWith("admin:") : d => d.decision === id && !(d.op || "").startsWith("admin:");
+    chips.append(h("button", { class: "chip" + (S.achip === id ? " on" : ""), onclick: () => { S.achip = id; renderAudit(); } }, label, h("span", { class: "n" }, S.audit.filter(fn).length)));
+  }
+  const q = $("#audit-q").value.trim().toLowerCase();
+  const rows = $("#audit-rows"); rows.replaceChildren();
+  const items = S.audit.filter(d => match(d) && (!q || JSON.stringify(d).toLowerCase().includes(q)));
+  if (!items.length) rows.append(h("tr", {}, h("td", { colspan: 6, class: "muted" }, "Nothing matches.")));
+  for (const d of items.slice(0, S.auditN)) rows.append(h("tr", {},
+    h("td", { class: "muted" }, when(d.at)), h("td", {}, d.email || h("span", { class: "muted", title: "the evidence never established who this was" }, "not identified")),
+    h("td", {}, action(d.op)), h("td", {}, wayIn(d)), h("td", {}, result(d)),
+    h("td", { class: "muted" }, d.decision === "allow" && !(d.op || "").startsWith("admin:") ? (d.namespace || "") : (d.reason || ""))));
+  if (items.length > S.auditN) rows.append(moreRow(6, items.length - S.auditN, () => { S.auditN += 30; renderAudit(); }));
+}
+$("#audit-q").addEventListener("input", () => { S.auditN = 30; renderAudit(); });
+$("#audit-refresh").addEventListener("click", loadAudit);
 
 /* ---------- memories ---------- */
 async function loadTurns() {
   $("#list").replaceChildren(h("div", { class: "loading" }, h("span", { class: "spin" })));
   try { S.turns = (await api("/portal/api/memories")).turns; }
   catch (e) { $("#list").replaceChildren(h("div", { class: "empty" }, e.message)); return; }
-  S.sel.clear();
-  renderStats(); renderChips(); renderList();
+  S.sel.clear(); renderChips(); renderList();
+  $("#tab-count").textContent = S.turns.filter(t => !t.automatic).length;
 }
-
 const CHIP_DEFS = [
   ["all", "All", t => !t.automatic],
   ["Open WebUI", "Open WebUI", t => t.source === "Open WebUI" && !t.automatic],
@@ -520,35 +695,26 @@ function renderChips() {
   for (const [id, label, fn] of CHIP_DEFS) {
     const n = S.turns.filter(fn).length;
     if (id !== "all" && !n) continue;
-    c.append(h("button", { class: "chip" + (S.chip === id ? " on" : ""),
-      onclick: () => { S.chip = id; renderChips(); renderList(); } }, label, h("span", { class: "n" }, n)));
+    c.append(h("button", { class: "chip" + (S.chip === id ? " on" : ""), onclick: () => { S.chip = id; renderChips(); renderList(); } }, label, h("span", { class: "n" }, n)));
   }
   const autos = S.turns.filter(t => t.automatic).length;
   $("#auto-banner").classList.toggle("hidden", !autos);
-  $("#auto-text").textContent = `${autos} ${autos === 1 ? "entry is" : "entries are"} Open WebUI's own background work (chat titles, tags, follow-ups), not things you said. They're hidden from your list.`;
+  $("#auto-text").textContent = `${autos} ${autos === 1 ? "entry is" : "entries are"} Open WebUI's own background work (chat titles, tags), not things you said. They're hidden from your list.`;
 }
-
 function visible() {
-  const fn = (CHIP_DEFS.find(c => c[0] === S.chip) || CHIP_DEFS[0])[2];
-  const q = S.q.trim().toLowerCase();
+  const fn = (CHIP_DEFS.find(c => c[0] === S.chip) || CHIP_DEFS[0])[2], q = S.q.trim().toLowerCase();
   return S.turns.filter(t => fn(t) && (!q || (t.you || "").toLowerCase().includes(q) || (t.reply || "").toLowerCase().includes(q)));
 }
-
 function clampText(text, cls, lines) {
-  const p = h("div", { class: `msg ${cls} clamp${lines}` }, text);
-  const wrap = h("div", {}, p);
+  const p = h("div", { class: `msg ${cls} clamp${lines}` }, text), wrap = h("div", {}, p);
   requestAnimationFrame(() => {
     if (p.scrollHeight > p.clientHeight + 2) {
-      const more = h("button", { class: "more", onclick: () => {
-        const open = p.classList.toggle(`clamp${lines}`);
-        more.textContent = open ? "Show more" : "Show less";
-      } }, "Show more");
+      const more = h("button", { class: "more", onclick: () => { more.textContent = p.classList.toggle(`clamp${lines}`) ? "Show more" : "Show less"; } }, "Show more");
       wrap.append(more);
     }
   });
   return wrap;
 }
-
 function turnCard(t) {
   const lines = [];
   if (t.you) lines.push(h("div", { class: "line" }, h("div", { class: "who-ic you" }, "YOU"), clampText(t.you, "you", 3)));
@@ -556,93 +722,60 @@ function turnCard(t) {
   const badges = [h("span", {}, when(t.at)), h("span", { class: "badge" + (t.source === "Added by you" ? " mine" : "") }, t.source)];
   if (t.automatic) badges.push(h("span", { class: "badge auto" }, `Automatic · ${t.automatic}`));
   const acts = h("div", { class: "acts" });
-  const del = h("button", { class: "icon-btn", title: "Delete", "aria-label": "Delete this memory", onclick: () => {
+  const del = h("button", { class: "icon-btn", title: "Delete", onclick: () => {
     acts.replaceChildren(h("div", { class: "confirm" }, "Delete?",
       h("button", { class: "btn danger solid", onclick: () => remove(t.ids, card) }, "Delete"),
       h("button", { class: "btn", onclick: () => acts.replaceChildren(del) }, "Keep")));
   } }, svg(ICON.trash));
   acts.append(del);
-  const box = h("input", { type: "checkbox", "aria-label": "Select", onchange: e => {
-    t.ids.forEach(id => e.target.checked ? S.sel.add(id) : S.sel.delete(id)); renderSel();
-  } });
+  const box = h("input", { type: "checkbox", "aria-label": "Select", onchange: e => { t.ids.forEach(id => e.target.checked ? S.sel.add(id) : S.sel.delete(id)); renderSel(); } });
   if (t.ids.every(id => S.sel.has(id))) box.checked = true;
-  const card = h("article", { class: "card turn" },
-    h("div", { class: "sel" }, box),
-    h("div", {}, ...lines, h("div", { class: "meta" }, badges)),
-    acts);
+  const card = h("article", { class: "card turn" }, h("div", { class: "sel" }, box), h("div", {}, ...lines, h("div", { class: "meta" }, badges)), acts);
   return card;
 }
-
 function renderList() {
-  const list = $("#list"); list.replaceChildren();
-  list.classList.toggle("selecting", S.selecting);
+  const list = $("#list"); list.replaceChildren(); list.classList.toggle("selecting", S.selecting);
   const rows = visible();
-  if (!rows.length) {
-    const none = !S.turns.length;
-    list.append(h("div", { class: "empty" }, svg(ICON.brain),
-      h("h3", {}, none ? "No memories yet" : "Nothing matches"),
-      h("div", {}, none ? "Chat with a memmachine- model in Open WebUI, or add a memory yourself."
-                        : "Try another word, or another filter.")));
-    return;
-  }
-  let lastDay = "";
-  for (const t of rows) {
-    const d = dayLabel(t.at);
-    if (d !== lastDay) { list.append(h("div", { class: "day" }, d)); lastDay = d; }
-    list.append(turnCard(t));
-  }
+  if (!rows.length) { list.append(h("div", { class: "empty" }, h("h3", {}, S.turns.length ? "Nothing matches" : "No memories yet"), h("div", {}, S.turns.length ? "Try another word, or another filter." : "Chat with a memmachine- model in Open WebUI, or add a memory yourself."))); return; }
+  let last = "";
+  for (const t of rows) { const d = dayLabel(t.at); if (d !== last) { list.append(h("div", { class: "day" }, d)); last = d; } list.append(turnCard(t)); }
 }
-
 async function remove(ids, card) {
   try {
     await api("/portal/api/memories/delete", { body: { ids } });
     card && card.remove();
     S.turns = S.turns.filter(t => !t.ids.some(id => ids.includes(id)));
     ids.forEach(id => S.sel.delete(id));
-    renderStats(); renderChips(); renderSel();
-    if (!card) renderList();
-    toast(ids.length > 2 ? "Memories deleted" : "Memory deleted");
-    refreshCount();
+    renderChips(); renderSel(); if (!card) renderList();
+    $("#tab-count").textContent = S.turns.filter(t => !t.automatic).length;
+    toast(ids.length > 2 ? "Memories deleted" : "Memory deleted"); refreshMe();
   } catch (e) { toast(e.message); }
 }
-
-async function refreshCount() {
-  try { S.me = await api("/portal/api/me"); $("#kv-eps").textContent = S.me.space.episodes; } catch {}
-}
-
+async function refreshMe() { try { S.me = await api("/portal/api/me"); renderAccess(); } catch {} }
 function renderSel() {
   $("#selbar").classList.toggle("hidden", !S.selecting);
-  const n = visible().filter(t => t.ids.every(id => S.sel.has(id))).length;
-  $("#sel-n").textContent = `${n} selected`;
+  $("#sel-n").textContent = `${visible().filter(t => t.ids.every(id => S.sel.has(id))).length} selected`;
   $("#sel-del").disabled = !S.sel.size;
 }
 
 /* ---------- recall ---------- */
 async function recall(q) {
-  const out = $("#recall-out");
-  out.replaceChildren(h("div", { class: "loading" }, h("span", { class: "spin" })));
+  const out = $("#recall-out"); out.replaceChildren(h("div", { class: "loading" }, h("span", { class: "spin" })));
   try {
     const { items } = await api("/portal/api/recall", { body: { query: q } });
     out.replaceChildren();
-    if (!S.me.enabled) out.append(h("div", { class: "banner" }, "Memory is paused, so right now nothing would actually be recalled. This is what would be, once it's on."));
+    if (!S.me.namespaces[0].enabled) out.append(h("div", { class: "banner" }, "Memory is paused, so right now nothing would actually be recalled. This is what would be, once it's on."));
     if (!items.length) { out.append(h("div", { class: "empty" }, h("h3", {}, "Nothing would be recalled"), h("div", {}, "The assistant would answer this without any memory."))); return; }
     const max = Math.max(...items.map(i => i.score || 0), 0.0001);
     for (const it of items) {
       const card = h("article", { class: "card hit" },
-        h("div", {}, h("div", { class: "score" }, it.score != null ? it.score.toFixed(2) : "—"),
-          h("div", { class: "bar" }, h("i", { style: `width:${Math.round(100 * (it.score || 0) / max)}%` }))),
-        h("div", {}, h("div", { class: "line" },
-            h("div", { class: "who-ic " + (it.role === "assistant" ? "ai" : "you") }, it.role === "assistant" ? "AI" : "YOU"),
-            clampText(it.text, it.role === "assistant" ? "ai" : "you", 3)),
+        h("div", {}, h("div", { class: "score" }, it.score != null ? it.score.toFixed(2) : "—"), h("div", { class: "bar" }, h("i", { style: `width:${Math.round(100 * (it.score || 0) / max)}%` }))),
+        h("div", {}, h("div", { class: "line" }, h("div", { class: "who-ic " + (it.role === "assistant" ? "ai" : "you") }, it.role === "assistant" ? "AI" : "YOU"), clampText(it.text, it.role === "assistant" ? "ai" : "you", 3)),
           h("div", { class: "meta" }, h("span", {}, when(it.at)), h("span", { class: "badge" }, it.source))),
-        h("div", { class: "acts", style: "opacity:1" }, h("button", { class: "icon-btn", title: "Delete", onclick: async () => {
-          await remove([it.id], null); card.remove();
-        } }, svg(ICON.trash))));
+        h("div", { class: "acts" }, h("button", { class: "icon-btn", title: "Delete", onclick: async () => { await remove([it.id], null); card.remove(); } }, svg(ICON.trash))));
       out.append(card);
     }
-    out.append(h("div", { class: "prompt-preview" },
-      "<memory>\nBelow is information retrieved from previous sessions…\n" +
-      items.map(i => "- " + i.text.replace(/\s+/g, " ").slice(0, 140)).join("\n") + "\n</memory>"));
+    out.append(h("div", { class: "prompt-preview" }, "<memory>\nBelow is information retrieved from previous sessions…\n" + items.map(i => "- " + i.text.replace(/\s+/g, " ").slice(0, 140)).join("\n") + "\n</memory>"));
   } catch (e) { out.replaceChildren(h("div", { class: "empty" }, e.message)); }
 }
 
@@ -650,34 +783,19 @@ async function recall(q) {
 $("#login-form").addEventListener("submit", async e => {
   e.preventDefault();
   const btn = $("#login-btn"); btn.disabled = true; $("#login-err").textContent = "";
-  try {
-    await api("/portal/api/login", { body: { email: $("#email").value, password: $("#password").value }, noRedirect: true });
-    $("#password").value = ""; await boot();
-  } catch (err) { $("#login-err").textContent = err.message; }
+  try { await api("/portal/api/login", { body: { email: $("#email").value, password: $("#password").value }, noRedirect: true }); $("#password").value = ""; await boot(); }
+  catch (err) { $("#login-err").textContent = err.message; }
   finally { btn.disabled = false; }
 });
 $("#logout").addEventListener("click", async () => { await api("/portal/api/logout", { body: {} }).catch(() => {}); S.turns = []; show("login"); });
-$("#enroll-btn").addEventListener("click", async () => { await api("/portal/api/enroll", { body: {} }); toast("Memory is on"); boot(); });
-
-async function toggleSwitch() {
-  const next = !S.me.enabled;
-  try {
-    await api("/portal/api/switch", { body: { enabled: next } });
-    S.me.enabled = next; renderSpace();
-    toast(next ? "Memory turned on" : "Memory paused — chats keep working");
-  } catch (e) { toast(e.message); }
-}
-$("#switch").addEventListener("click", toggleSwitch);
-$("#switch").addEventListener("keydown", e => { if (e.key === " " || e.key === "Enter") { e.preventDefault(); toggleSwitch(); } });
-$("#ns").addEventListener("click", () => { navigator.clipboard?.writeText($("#ns-text").textContent); toast("Namespace copied"); });
-
 for (const tab of $$(".tab")) tab.addEventListener("click", () => {
   S.tab = tab.dataset.tab;
   $$(".tab").forEach(t => t.classList.toggle("on", t === tab));
-  for (const id of ["memories", "recall", "settings"]) $(`#t-${id}`).classList.toggle("hidden", id !== S.tab);
+  for (const id of ["access", "memories", "recall", "admin"]) $(`#t-${id}`).classList.toggle("hidden", id !== S.tab);
+  if (S.tab === "access") loadHistory();
+  if (S.tab === "admin") loadAdmin();
   if (S.tab === "recall") $("#recall-q").focus();
 });
-
 $("#filter").addEventListener("input", e => { S.q = e.target.value; renderList(); renderSel(); });
 $("#select-btn").addEventListener("click", () => { S.selecting = !S.selecting; S.sel.clear(); renderList(); renderSel(); });
 $("#sel-cancel").addEventListener("click", () => { S.selecting = false; S.sel.clear(); renderList(); renderSel(); });
@@ -687,36 +805,27 @@ $("#sel-del").addEventListener("click", async () => {
   if (!ids.length || !confirm(`Delete ${visible().filter(t => t.ids.every(id => S.sel.has(id))).length} selected memories?`)) return;
   await remove(ids, null); S.selecting = false; renderList(); renderSel();
 });
-$("#auto-clean").addEventListener("click", async () => {
-  const ids = S.turns.filter(t => t.automatic).flatMap(t => t.ids);
-  await remove(ids, null);
-});
-
+$("#auto-clean").addEventListener("click", () => remove(S.turns.filter(t => t.automatic).flatMap(t => t.ids), null));
 $("#add-btn").addEventListener("click", () => { $("#add-text").value = ""; $("#dlg-add").showModal(); $("#add-text").focus(); });
 $("#add-form").addEventListener("submit", async e => {
   if (e.submitter && e.submitter.value !== "save") return;
   e.preventDefault();
-  const text = $("#add-text").value.trim();
-  if (!text) return;
+  const text = $("#add-text").value.trim(); if (!text) return;
   $("#add-save").disabled = true;
-  try { await api("/portal/api/memories/add", { body: { text } }); $("#dlg-add").close(); toast("Saved — it may take a few seconds to be searchable"); await loadTurns(); refreshCount(); }
+  try { await api("/portal/api/memories/add", { body: { text } }); $("#dlg-add").close(); toast("Saved; it may take a few seconds to be searchable"); await loadTurns(); refreshMe(); }
   catch (err) { toast(err.message); }
   finally { $("#add-save").disabled = false; }
 });
-
-$("#clear-btn").addEventListener("click", () => {
-  $("#clear-n").textContent = S.me.space.episodes; $("#clear-confirm").value = ""; $("#clear-go").disabled = true; $("#dlg-clear").showModal();
-});
+function openClear(n) { $("#clear-n").textContent = n; $("#clear-confirm").value = ""; $("#clear-go").disabled = true; $("#dlg-clear").showModal(); }
 $("#clear-confirm").addEventListener("input", e => { $("#clear-go").disabled = e.target.value.trim().toLowerCase() !== "delete"; });
 $("#clear-form").addEventListener("submit", async e => {
   if (e.submitter && e.submitter.value !== "go") return;
   e.preventDefault();
-  try { const r = await api("/portal/api/memories/clear", { body: {} }); $("#dlg-clear").close(); toast(`Deleted ${r.deleted} entries`); await loadTurns(); refreshCount(); }
+  try { const r = await api("/portal/api/memories/clear", { body: {} }); $("#dlg-clear").close(); toast(`Deleted ${r.deleted} messages`); await loadTurns(); refreshMe(); }
   catch (err) { toast(err.message); }
 });
-
 $("#recall-form").addEventListener("submit", e => { e.preventDefault(); const q = $("#recall-q").value.trim(); if (q) recall(q); });
-
+S.tab = "access";
 boot();
 </script>
 </body>

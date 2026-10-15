@@ -44,6 +44,8 @@ def create_app(
     timeout: float = 60.0,
     transport: Optional[httpx.AsyncBaseTransport] = None,
     owui_url: Optional[str] = None,
+    litellm_url: Optional[str] = None,
+    litellm_key: Optional[str] = None,
 ) -> FastAPI:
     """The platform API; with `owui_url`, also the My Memory portal at /portal/."""
     app = FastAPI(title="MemMachine mock platform", docs_url=None, redoc_url=None)
@@ -58,12 +60,17 @@ def create_app(
             principal = authorize(registry, request.headers)
         except Denied as exc:
             log.info("op=%s decision=%s status=%s reason=%r", op, exc.decision, exc.status, exc.reason)
+            registry.record(op=op, decision=exc.decision, status=exc.status, reason=exc.reason,
+                            **exc.context)
             raise
         u = principal.user
         log.info(
             "op=%s decision=allow service=%s via=%s key=%s user=%s namespace=%s/%s",
             op, principal.service, principal.via, principal.key_label, u.email, u.org_id, u.project_id,
         )
+        registry.record(op=op, decision="allow", status=200, service=principal.service,
+                        via=principal.via, key_label=principal.key_label, email=u.email,
+                        namespace=f"{u.org_id}/{u.project_id}")
         return principal
 
     @app.exception_handler(Denied)
@@ -141,7 +148,7 @@ def create_app(
     if owui_url:
         from .portal import mount_portal
 
-        mount_portal(app, registry, core_url, owui_url, client)
+        mount_portal(app, registry, core_url, owui_url, client, litellm_url, litellm_key)
 
     return app
 
@@ -179,6 +186,10 @@ def _from_env() -> FastAPI:
         core,
         timeout=float(os.environ.get("MOCK_PLATFORM_CORE_TIMEOUT", "60")),
         owui_url=os.environ.get("MOCK_PLATFORM_OWUI_URL") or None,
+        # A read-only LiteLLM identity, so an admin can enrol people by email and
+        # the platform finds their keys itself instead of trusting what it is told.
+        litellm_url=os.environ.get("MOCK_PLATFORM_LITELLM_URL") or None,
+        litellm_key=os.environ.get("MOCK_PLATFORM_LITELLM_KEY") or None,
     )
 
 

@@ -5,6 +5,7 @@
 
     python -m mock_platform.admin --db reg.sqlite service add litellm-main
     python -m mock_platform.admin --db reg.sqlite user add alice@corp.example
+    python -m mock_platform.admin --db reg.sqlite user role admin@corp.example admin
     python -m mock_platform.admin --db reg.sqlite key personal alice@corp.example --key-env ALICE_VIRTUAL_KEY --label alice-personal
     python -m mock_platform.admin --db reg.sqlite key app --key-env OPENWEBUI_APP_KEY --label open-webui-app --secret-env FORWARD_USER_INFO_HEADER_JWT_SECRET
     python -m mock_platform.admin --db reg.sqlite user disable alice@corp.example
@@ -44,8 +45,12 @@ def main(argv=None) -> None:
     u_add = usr.add_parser("add")
     u_add.add_argument("email")
     u_add.add_argument("--project", default="default")
+    u_add.add_argument("--role", choices=("user", "admin"), default="user")
     for action in ("enable", "disable"):
         usr.add_parser(action).add_argument("email")
+    u_role = usr.add_parser("role", help="set a person's platform role")
+    u_role.add_argument("email")
+    u_role.add_argument("role", choices=("user", "admin"))
 
     key = sub.add_parser("key").add_subparsers(dest="action", required=True)
     k_personal = key.add_parser("personal", help="link a person's own virtual key")
@@ -69,7 +74,9 @@ def main(argv=None) -> None:
         credential = reg.add_service(a.label)
         print(credential)  # shown once; only its hash is kept
     elif a.cmd == "user" and a.action == "add":
-        print(json.dumps(reg.add_user(a.email, a.project).__dict__))
+        print(json.dumps(reg.add_user(a.email, a.project, a.role).__dict__))
+    elif a.cmd == "user" and a.action == "role":
+        print(json.dumps(reg.set_role(a.email, a.role).__dict__))
     elif a.cmd == "user":
         print(json.dumps(reg.set_enabled(a.email, a.action == "enable").__dict__))
     elif a.cmd == "key" and a.action == "personal":

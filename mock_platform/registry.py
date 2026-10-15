@@ -3,19 +3,24 @@
 
 """The mock platform's registry: who exists, which keys they hold, who may call.
 
-SQLite, four tables, nothing a real tenant control server would not also need:
+SQLite, five tables, nothing a real tenant control server would not also need:
 
     services  one row per LiteLLM deployment allowed to call the platform. Only
               the SHA-256 of its credential is stored, as LiteLLM stores keys.
-    users     one row per person, with the one namespace this mock gives them.
+    users     one row per person: the one namespace this mock gives them, their
+              platform role (user or admin), whether memory is on, and whether
+              requests from Open WebUI may reach it.
     keys      LiteLLM virtual keys the platform knows, by their SHA-256 hash,
               which is the only form the hook ever sees. A *personal* key names
-              its owner. An *app* key (Open WebUI's shared key) names nobody, so
-              a request on it must carry a signed user token instead.
+              its owner and can be switched off by them. An *app* key (Open
+              WebUI's shared key) names nobody, so a request on it must carry a
+              signed user token instead.
     apps      for each app key, how to verify the tokens that may ride on it.
+    audit     every authorization decision, allowed or not, newest kept.
 
-The app signing secret is stored as given. That is acceptable for a mock and is
-the first thing a real platform would move into a secret store.
+The platform role is the platform's own: being an Open WebUI admin grants nothing
+here. The app signing secret is stored as given; a real platform would keep it
+in a secret store.
 """
 from __future__ import annotations
 
@@ -23,6 +28,7 @@ import hashlib
 import re
 import secrets
 import sqlite3
+import time
 from dataclasses import dataclass
 from typing import Optional
 
@@ -50,7 +56,32 @@ CREATE TABLE IF NOT EXISTS apps (
     jwt_secret TEXT NOT NULL,
     issuer     TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS audit (
+    id        INTEGER PRIMARY KEY AUTOINCREMENT,
+    at        REAL NOT NULL,
+    op        TEXT NOT NULL,
+    decision  TEXT NOT NULL,
+    status    INTEGER NOT NULL,
+    reason    TEXT,
+    service   TEXT,
+    via       TEXT,
+    key_label TEXT,
+    email     TEXT,
+    namespace TEXT
+);
+CREATE INDEX IF NOT EXISTS audit_email ON audit (email, id);
 """
+
+# Columns added after the first release: (table, column, definition). Applied in
+# place to an existing registry so nobody has to re-enrol.
+_MIGRATIONS = (
+    ("users", "role", "TEXT NOT NULL DEFAULT 'user'"),
+    ("users", "allow_app", "INTEGER NOT NULL DEFAULT 1"),
+    ("users", "created_at", "REAL"),
+    ("keys", "enabled", "INTEGER NOT NULL DEFAULT 1"),
+)
+AUDIT_KEEP = 5000
+ROLES = ("user", "admin")
 
 _HEX64 = re.compile(r"^[0-9a-f]{64}$")
 # MemMachine's org_id/project_id character set, as the hook slugifies them.
@@ -83,6 +114,13 @@ class User:
     org_id: str
     project_id: str
     enabled: bool
+    role: str = "user"
+    allow_app: bool = True
+    created_at: Optional[float] = None
+
+    @property
+    def is_admin(self) -> bool:
+        return self.role == "admin"
 
 
 @dataclass(frozen=True)
@@ -91,6 +129,7 @@ class Key:
     kind: str
     user_id: Optional[str]
     label: str
+    enabled: bool = True
 
 
 @dataclass(frozen=True)
@@ -107,6 +146,11 @@ class Registry:
         self._db.row_factory = sqlite3.Row
         self._db.execute("PRAGMA foreign_keys = ON")
         self._db.executescript(SCHEMA)
+        for table, column, definition in _MIGRATIONS:
+            have = {r["name"] for r in self._db.execute(f"PRAGMA table_info({table})")}
+            if column not in have:
+                with self._db:
+                    self._db.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
 
     # ---- reads, used on every request ----
 
@@ -120,7 +164,7 @@ class Registry:
         row = self._db.execute(
             "SELECT * FROM keys WHERE key_hash = ?", (key_hash_value,)
         ).fetchone()
-        return Key(**dict(row)) if row else None
+        return _key(row)
 
     def app(self, key_hash_value: str) -> Optional[App]:
         row = self._db.execute(
@@ -145,13 +189,51 @@ class Registry:
         rows = self._db.execute(
             "SELECT * FROM keys WHERE kind = 'personal' AND user_id = ? ORDER BY label", (user_id,)
         ).fetchall()
-        return [Key(**dict(r)) for r in rows]
+        return [_key(r) for r in rows]
+
+    def users(self) -> list[User]:
+        return [_user(r) for r in self._db.execute("SELECT * FROM users ORDER BY email")]
+
+    def app_keys(self) -> list[dict]:
+        return [dict(r) for r in self._db.execute(
+            "SELECT k.label, a.issuer, substr(k.key_hash, 1, 12) AS key_hash "
+            "FROM keys k JOIN apps a ON a.key_hash = k.key_hash ORDER BY k.label")]
 
     def app_labels(self) -> list[str]:
-        return [r["label"] for r in self._db.execute(
-            "SELECT label FROM keys WHERE kind = 'app' ORDER BY label")]
+        return [a["label"] for a in self.app_keys()]
 
-    # ---- writes, used by the admin CLI ----
+    def services(self) -> list[str]:
+        return [r["label"] for r in self._db.execute("SELECT label FROM services ORDER BY label")]
+
+    # ---- audit ----
+
+    def record(self, **entry) -> None:
+        cols = ("op", "decision", "status", "reason", "service", "via", "key_label",
+                "email", "namespace")
+        with self._db:
+            self._db.execute(
+                f"INSERT INTO audit (at, {', '.join(cols)}) VALUES (?, {', '.join('?' * len(cols))})",
+                (time.time(), *(entry.get(c) for c in cols)),
+            )
+            self._db.execute(
+                "DELETE FROM audit WHERE id <= (SELECT max(id) FROM audit) - ?", (AUDIT_KEEP,)
+            )
+
+    def audit(self, limit: int = 100, email: Optional[str] = None) -> list[dict]:
+        if email:
+            rows = self._db.execute(
+                "SELECT * FROM audit WHERE lower(email) = lower(?) ORDER BY id DESC LIMIT ?",
+                (email, limit))
+        else:
+            rows = self._db.execute("SELECT * FROM audit ORDER BY id DESC LIMIT ?", (limit,))
+        return [dict(r) for r in rows]
+
+    def last_seen(self) -> dict[str, float]:
+        return {r["email"].lower(): r["at"] for r in self._db.execute(
+            "SELECT email, max(at) AS at FROM audit WHERE email IS NOT NULL "
+            "AND decision = 'allow' GROUP BY lower(email)")}
+
+    # ---- writes, used by the admin CLI and the portal ----
 
     def add_service(self, label: str) -> str:
         credential = "mm-svc-" + secrets.token_urlsafe(32)
@@ -162,30 +244,49 @@ class Registry:
             )
         return credential
 
-    def add_user(self, email: str, project_id: str = "default") -> User:
+    def add_user(self, email: str, project_id: str = "default", role: str = "user") -> User:
+        if role not in ROLES:
+            raise ValueError(f"role must be one of {ROLES}")
         email = email.strip()
         user_id = slug(email)
         with self._db:
             self._db.execute(
-                "INSERT INTO users (user_id, email, org_id, project_id) VALUES (?, ?, ?, ?)",
-                (user_id, email, user_id, project_id),
+                "INSERT INTO users (user_id, email, org_id, project_id, role, created_at) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                (user_id, email, user_id, project_id, role, time.time()),
             )
         return self.user(user_id)
 
-    def set_enabled(self, email: str, enabled: bool) -> User:
-        user = self.user_by_email(email)
-        if user is None:
-            raise KeyError(email)
+    def delete_user(self, email: str) -> User:
+        user = self._require(email)
         with self._db:
-            self._db.execute(
-                "UPDATE users SET enabled = ? WHERE user_id = ?", (int(enabled), user.user_id)
+            self._db.execute("DELETE FROM keys WHERE kind = 'personal' AND user_id = ?", (user.user_id,))
+            self._db.execute("DELETE FROM users WHERE user_id = ?", (user.user_id,))
+        return user
+
+    def set_enabled(self, email: str, enabled: bool) -> User:
+        return self._set(email, "enabled", int(enabled))
+
+    def set_allow_app(self, email: str, allowed: bool) -> User:
+        return self._set(email, "allow_app", int(allowed))
+
+    def set_role(self, email: str, role: str) -> User:
+        if role not in ROLES:
+            raise ValueError(f"role must be one of {ROLES}")
+        return self._set(email, "role", role)
+
+    def set_key_enabled(self, user_id: str, key_hash_value: str, enabled: bool) -> Key:
+        with self._db:
+            cur = self._db.execute(
+                "UPDATE keys SET enabled = ? WHERE key_hash = ? AND kind = 'personal' AND user_id = ?",
+                (int(enabled), key_hash_value, user_id),
             )
-        return self.user(user.user_id)
+        if cur.rowcount != 1:
+            raise KeyError(key_hash_value)
+        return self.key(key_hash_value)
 
     def link_personal_key(self, email: str, raw_or_hash: str, label: str) -> Key:
-        user = self.user_by_email(email)
-        if user is None:
-            raise KeyError(email)
+        user = self._require(email)
         h = key_hash(raw_or_hash)
         with self._db:
             self._db.execute(
@@ -217,12 +318,25 @@ class Registry:
         q = lambda sql: [dict(r) for r in self._db.execute(sql)]  # noqa: E731
         return {
             "services": q("SELECT label FROM services ORDER BY label"),
-            "users": q("SELECT user_id, email, org_id, project_id, enabled FROM users ORDER BY email"),
+            "users": q("SELECT user_id, email, role, org_id, project_id, enabled, allow_app "
+                       "FROM users ORDER BY email"),
             "keys": q(
-                "SELECT label, kind, user_id, substr(key_hash, 1, 12) AS key_hash "
+                "SELECT label, kind, user_id, enabled, substr(key_hash, 1, 12) AS key_hash "
                 "FROM keys ORDER BY label"
             ),
         }
+
+    def _require(self, email: str) -> User:
+        user = self.user_by_email(email)
+        if user is None:
+            raise KeyError(email)
+        return user
+
+    def _set(self, email: str, column: str, value) -> User:
+        user = self._require(email)
+        with self._db:
+            self._db.execute(f"UPDATE users SET {column} = ? WHERE user_id = ?", (value, user.user_id))
+        return self.user(user.user_id)
 
 
 def _user(row) -> Optional[User]:
@@ -230,4 +344,13 @@ def _user(row) -> Optional[User]:
         return None
     d = dict(row)
     d["enabled"] = bool(d["enabled"])
+    d["allow_app"] = bool(d.get("allow_app", 1))
     return User(**d)
+
+
+def _key(row) -> Optional[Key]:
+    if row is None:
+        return None
+    d = dict(row)
+    d["enabled"] = bool(d.get("enabled", 1))
+    return Key(**d)

@@ -47,6 +47,7 @@ WebUI's signature for app keys.
 | No key hash | 401 |
 | Key not registered | 403 `X-MM-Decision: not-enrolled` |
 | Personal key | the key's owner |
+| Personal key switched off by its owner, or Open WebUI access switched off | 403 not-enrolled |
 | Personal key **and** a user token | 401 — tokens are honoured only on their app's key, so a token cannot be replayed on someone else's key |
 | App key without a token | 401 |
 | App key, token fails signature / issuer / expiry / has no email | 401 |
@@ -104,25 +105,42 @@ Open WebUI is unchanged: `ENABLE_FORWARD_USER_INFO_HEADERS=true` and its
 `FORWARD_USER_INFO_HEADER_JWT_SECRET`, which goes to the platform (`key app
 --secret-env`) instead of to LiteLLM.
 
-## My Memory portal
+## The portal: access first, memory second
 
-With `MOCK_PLATFORM_OWUI_URL` set, the platform also serves a page at
-`/portal/` where a person sees and manages their own memory:
+With `MOCK_PLATFORM_OWUI_URL` set, the platform serves a console at
+`/portal/`. People sign in with their Open WebUI account: the email and password
+go to Open WebUI's own sign-in endpoint and are never stored, and the answer is
+mapped through the registry like a chat token's email. What someone may do here
+comes from the **platform's** role (`user` or `admin`), never from Open WebUI.
 
-- **Sign in with the Open WebUI account.** The email and password go to Open
-  WebUI's own sign-in endpoint and are never stored; its answer is the proof of
-  identity, mapped through the registry like a chat token's email.
-- **Your space:** the namespace, how many conversations are remembered, where
-  memory is used from (the Open WebUI app, personal keys), and an on/off switch.
-  Off is the registry's `enabled` flag, so chats keep working without memory.
-- **Memories:** each stored user message paired with its reply, newest first,
-  filterable by source, searchable, deletable one by one or in bulk; add a
-  memory by hand. Open WebUI's background prompts (chat titles, tags) are
-  flagged as automatic and can be removed in one click.
-- **What would it recall?** runs the same search the hook runs before a chat
-  and shows what would be put in the prompt, with scores.
-- **Settings:** export everything as JSON; delete everything.
-- Someone not yet enrolled can turn memory on for themselves.
+**Everyone, about themselves (Access tab):**
+
+- who they are and how that was established, their role, their namespace;
+- their namespaces, with memory on/off, stored count, export and delete-all
+  (one personal namespace for now; more come with per-project grants);
+- every way into their memory, with a switch each: Open WebUI (the app key plus
+  their signed token) and each personal LiteLLM key. A switched-off way gets
+  "not enrolled": that client keeps working without memory;
+- their access history: every decision the platform made about their memory.
+
+The Memories and "What would it recall?" tabs are unchanged.
+
+**Admins, about everyone (Admin tab):**
+
+- create an account by email. With `MOCK_PLATFORM_LITELLM_URL` and
+  `MOCK_PLATFORM_LITELLM_KEY` (a LiteLLM `proxy_admin_viewer` key, read-only) the
+  platform looks up that person's personal keys in LiteLLM itself and links
+  them, so a key is never attached to the wrong owner. Team and blocked keys are
+  skipped. "Sync keys" repeats the lookup and unlinks keys LiteLLM no longer has;
+- delete an account (optionally with its memories), switch memory, change role.
+  An admin cannot delete or demote themselves;
+- what the platform trusts: LiteLLM deployments, apps with signed tokens, and
+  the LiteLLM lookup;
+- the audit log: every authorization decision and admin action, filterable.
+
+Bootstrap the first admin with the CLI: `user add admin@corp.example --role admin`
+(or `user role <email> admin`). There is no self-enrolment: a person without an
+account is told who the admins are.
 
 Every route acts on the signed-in person's namespace, taken from the registry,
 never from the browser; deletes re-check each id against that namespace first.

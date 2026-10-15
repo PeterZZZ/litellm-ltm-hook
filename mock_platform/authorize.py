@@ -20,6 +20,8 @@ Rules, in order. Each refusal names the step that failed.
    here with that app's own secret and issuer.                      401
    Its email must belong to a registered user.                  not enrolled
 6. A disabled user is not enrolled.                             not enrolled
+7. A person can also shut one way in: a personal key switched off, or
+   Open WebUI access switched off, is not enrolled for that path. not enrolled
 
 "Not enrolled" is 403 with `X-MM-Decision: not-enrolled`. The hook treats that
 one answer as "memory is off for this person" and carries on without memory;
@@ -49,11 +51,14 @@ MAX_REQUEST_AGE_SECONDS = 15 * 60
 
 
 class Denied(Exception):
-    def __init__(self, status: int, reason: str, decision: str = "refused"):
+    def __init__(self, status: int, reason: str, decision: str = "refused", **context):
         super().__init__(reason)
         self.status = status
         self.reason = reason
         self.decision = decision
+        # What was known when the request stopped (service, via, key_label,
+        # email), so the audit log can say whose request it was.
+        self.context = context
 
 
 @dataclass(frozen=True)
@@ -82,32 +87,40 @@ def authorize(registry: Registry, headers, now: Optional[float] = None) -> Princ
     # 3. Does the platform know that key at all.
     key = registry.key(key_hash)
     if key is None:
-        raise Denied(403, "virtual key not registered", NOT_ENROLLED)
+        raise Denied(403, "virtual key not registered", NOT_ENROLLED, service=service)
 
     token = (headers.get(USER_TOKEN_HEADER) or "").strip()
+    ctx = {"service": service, "key_label": key.label}
 
     if key.kind == "personal":
         # 4. The key is the person.
-        if token:
-            raise Denied(401, "user token presented on a personal key")
         user = registry.user(key.user_id)
+        ctx.update(via="personal-key", email=user.email)
+        if token:
+            raise Denied(401, "user token presented on a personal key", **ctx)
+        if not key.enabled:
+            raise Denied(403, "key switched off by its owner", NOT_ENROLLED, **ctx)
         via = "personal-key"
     else:
         # 5. The key is an application; the token is the person.
+        ctx["via"] = "app-token"
         if not token:
-            raise Denied(401, "app key without a user token")
+            raise Denied(401, "app key without a user token", **ctx)
         app = registry.app(key.key_hash)
         if app is None:
-            raise Denied(401, "app key has no token configuration")
-        email = _verify_token(token, app.jwt_secret, app.issuer, _judge_at(headers, now))
+            raise Denied(401, "app key has no token configuration", **ctx)
+        email = _verify_token(token, app.jwt_secret, app.issuer, _judge_at(headers, now), ctx)
+        ctx["email"] = email
         user = registry.user_by_email(email)
         if user is None:
-            raise Denied(403, "token user not registered", NOT_ENROLLED)
+            raise Denied(403, "token user not registered", NOT_ENROLLED, **ctx)
+        if not user.allow_app:
+            raise Denied(403, "Open WebUI access switched off", NOT_ENROLLED, **ctx)
         via = "app-token"
 
     # 6. Memory switched off for this person.
     if not user.enabled:
-        raise Denied(403, "user disabled", NOT_ENROLLED)
+        raise Denied(403, "user disabled", NOT_ENROLLED, **ctx)
 
     return Principal(user=user, service=service, key_label=key.label, via=via)
 
@@ -131,7 +144,7 @@ def _judge_at(headers, now: float) -> float:
     return started
 
 
-def _verify_token(token: str, secret: str, issuer: str, at: float) -> str:
+def _verify_token(token: str, secret: str, issuer: str, at: float, ctx: dict) -> str:
     try:
         claims = jwt.decode(
             token,
@@ -142,14 +155,14 @@ def _verify_token(token: str, secret: str, issuer: str, at: float) -> str:
             options={"require": ["exp", "iss", "email"], "verify_exp": False},
         )
     except jwt.PyJWTError as exc:
-        raise Denied(401, f"user token rejected: {type(exc).__name__}") from None
+        raise Denied(401, f"user token rejected: {type(exc).__name__}", **ctx) from None
     try:
         expires_at = float(claims["exp"])
     except (TypeError, ValueError):
-        raise Denied(401, "user token has no usable exp") from None
+        raise Denied(401, "user token has no usable exp", **ctx) from None
     if at > expires_at + LEEWAY_SECONDS:
-        raise Denied(401, "user token expired")
+        raise Denied(401, "user token expired", **ctx)
     email = str(claims.get("email") or "").strip()
     if not email:
-        raise Denied(401, "user token carries no email")
+        raise Denied(401, "user token carries no email", **ctx)
     return email
