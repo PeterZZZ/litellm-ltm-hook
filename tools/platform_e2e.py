@@ -1,7 +1,7 @@
 # Copyright 2026 litellm-ltm-hook contributors
 # SPDX-License-Identifier: Apache-2.0
 
-"""End-to-end checks for platform mode: Open WebUI -> LiteLLM (hook) -> mock platform -> core.
+"""End-to-end checks for platform mode: Corp SSO -> Open WebUI -> LiteLLM (hook) -> mock platform -> core.
 
 Run against a live stack. Nothing here is collected by pytest.
 
@@ -12,9 +12,11 @@ Run against a live stack. Nothing here is collected by pytest.
     python3 tools/platform_e2e.py
 
 KEYS_FILE holds ALICE_/BOB_/CAROL_VIRTUAL_KEY and OPENWEBUI_APP_KEY (KEY=value
-lines); ACCOUNTS_FILE holds "email password" lines for the Open WebUI logins.
-OWUI_JWT_SECRET is used only to mint tokens the way Open WebUI would, for the
-replay and expiry checks. Expected registry: alice and bob enrolled, carol not.
+lines); ACCOUNTS_FILE holds "email password" lines for the Corp SSO (Keycloak)
+logins, used for both Open WebUI and the portal. OWUI_JWT_SECRET is used only to
+mint tokens the way Open WebUI would, for the replay and expiry checks. Expected:
+alice (E12345) and bob (E67890) enrolled, carol (E24680) not; the hook names
+Open WebUI users by the token's name claim, which SSO sets to the employee ID.
 """
 import json
 import os
@@ -25,6 +27,9 @@ import urllib.request
 import uuid
 
 import jwt
+
+sys.path.insert(0, os.path.dirname(__file__))
+from sso_browser import cookie, sso_login  # noqa: E402
 
 LITELLM = os.environ["LITELLM_URL"].rstrip("/")
 OWUI = os.environ["OWUI_URL"].rstrip("/")
@@ -42,6 +47,8 @@ RUN = uuid.uuid4().hex[:6]
 FACT = f"PELICAN-{uuid.uuid4().hex[:6].upper()}"
 QUESTION = (f"What is the codename of project {RUN}? "
             "If you do not know, answer exactly UNKNOWN.")
+EMPLOYEE = {"alice@corp.example": "E12345", "bob@corp.example": "E67890",
+            "carol@corp.example": "E24680"}
 results = []
 
 
@@ -65,13 +72,21 @@ def chat(url, token, text, headers=None):
 
 
 def owui_login(email):
-    _, body = post(f"{OWUI}/api/v1/auths/signin", {"email": email, "password": accounts[email]}, "-")
-    return body["token"]
+    """Sign in to Open WebUI through Corp SSO, as a browser would; return its session token."""
+    opener, _ = sso_login(f"{OWUI}/oauth/oidc/login", email, accounts[email])
+    return cookie(opener, "token")
+
+
+def owui_me(token):
+    req = urllib.request.Request(f"{OWUI}/api/v1/auths/", headers={"Authorization": f"Bearer {token}"})
+    with urllib.request.urlopen(req, timeout=30) as r:
+        return json.load(r)
 
 
 def mint(email, ttl=300, secret=SECRET):
     now = int(time.time())
-    return jwt.encode({"sub": "e2e", "email": email, "iss": "open-webui", "iat": now, "exp": now + ttl},
+    return jwt.encode({"sub": "e2e", "email": email, "name": EMPLOYEE.get(email, ""),
+                       "iss": "open-webui", "iat": now, "exp": now + ttl},
                       secret, algorithm="HS256")
 
 
@@ -87,8 +102,7 @@ def clear_earlier_runs(email):
     runs outrank the new fact in recall; left alone, each run makes the next one
     less likely to pass.
     """
-    import http.cookiejar
-    jar = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(http.cookiejar.CookieJar()))
+    jar, _ = sso_login(f"{PLATFORM}/portal/auth/login", email, accounts[email])
 
     def portal(path, body=None):
         req = urllib.request.Request(
@@ -98,7 +112,6 @@ def clear_earlier_runs(email):
         with jar.open(req, timeout=120) as r:
             return json.load(r)
 
-    portal("/portal/api/login", {"email": email, "password": accounts[email]})
     ids = [i for t in portal("/portal/api/memories")["turns"]
            if "codename of project" in (t["you"] or "") + (t["reply"] or "") for i in t["ids"]]
     if ids:
@@ -110,6 +123,9 @@ OW = f"{OWUI}/api/chat/completions"
 LL = f"{LITELLM}/v1/chat/completions"
 clear_earlier_runs("alice@corp.example")
 alice, bob, carol = (owui_login(f"{n}@corp.example") for n in ("alice", "bob", "carol"))
+me = owui_me(alice)
+check("alice signed in to Open WebUI through Corp SSO; name is her employee ID",
+      me["email"] == "alice@corp.example" and me["name"] == "E12345", f"{me['email']} name={me['name']}")
 
 s, a = chat(OW, alice, f"Remember this: the codename of project {RUN} is {FACT}.")
 check("alice via Open WebUI states a fact", s == 200, a)
@@ -144,11 +160,21 @@ check("app key + expired token: 401", s == 401, a)
 s, a = chat(LL, keys["BOB_VIRTUAL_KEY"], QUESTION, {"x-openwebui-user-jwt": mint("alice@corp.example")})
 check("alice's valid token replayed on bob's key: 401", s == 401, a)
 
-s, a = chat(LL, keys["ALICE_VIRTUAL_KEY"], QUESTION, {"x-memmachine-org": "bob_corp_example"})
-check("alice's key + x-memmachine-org: bob -> header ignored, still alice", s == 200 and FACT in a, a)
+s, a = chat(LL, keys["ALICE_VIRTUAL_KEY"], QUESTION, {"x-memmachine-org": "E67890"})
+check("alice's key + x-memmachine-org: E67890 (bob) -> header ignored, still alice", s == 200 and FACT in a, a)
 
 s, a = post(f"{PLATFORM}/api/v2/memories/search", {"query": "pager"}, "mm-svc-guess")
 check("platform called directly with a guessed service credential: 401", s == 401, str(a))
+
+# Alice edits her Open WebUI display name to Bob's employee ID. Open WebUI signs
+# whatever name she has, so the token is valid; the platform knows E67890 is not
+# the person behind alice@corp.example and refuses.
+post(f"{OWUI}/api/v1/auths/update/profile", {"name": "E67890", "profile_image_url": "/user.png"}, alice)
+s, a = chat(OW, alice, QUESTION)
+check("alice renamed to bob's employee ID: refused", s != 200 and FACT not in a, f"{s} {a}")
+alice = owui_login("alice@corp.example")  # signing in again restores the name from SSO
+check("signing in again restores her name from Corp SSO", owui_me(alice)["name"] == "E12345",
+      owui_me(alice)["name"])
 
 if os.environ.get("PLATFORM_DB"):
     sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))

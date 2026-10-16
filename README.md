@@ -216,10 +216,13 @@ request headers accordingly.
 ## Platform mode (experimental)
 
 With `MEMMACHINE_PLATFORM=1` the hook stops deciding identity or namespace. It
-sends the virtual key's hash, Open WebUI's signed token (unverified) and its own
-service credential to a MemMachine platform, which authenticates, authorizes,
-and picks the namespace. `mock_platform/` is a minimal one for development; see
-[`mock_platform/README.md`](./mock_platform/README.md).
+speaks the shared Platform API (`X-MemMachine-*` headers): it proposes the person
+(their employee ID, or the email in phase 1) and the namespace, and forwards the
+virtual key's hash, Open WebUI's signed token (unverified) and its own service
+credential. A MemMachine platform verifies all of it. `MEMMACHINE_OWUI_USER_CLAIM`
+picks the token claim that names an Open WebUI user (`name` with Corp SSO, where
+it is the employee ID). `mock_platform/` is a minimal platform for development,
+with a mock Keycloak for SSO; see [`mock_platform/README.md`](./mock_platform/README.md).
 
 ## Design notes
 

@@ -219,7 +219,17 @@ dialog::backdrop{background:rgba(10,10,20,.45)}
 </header>
 
 <section id="v-login" class="center hidden">
-  <form class="card login" id="login-form" autocomplete="on">
+  <div class="card login hidden" id="sso-card">
+    <h1>Sign in</h1>
+    <p class="lead">Use Corp SSO, the same sign-in as Open WebUI. The platform decides what you can see and do.</p>
+    <a class="btn primary" id="sso-btn" href="/portal/auth/login">Sign in with Corp SSO</a>
+    <div class="err" id="sso-err"></div>
+    <div class="fine">
+      <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="3" y="7" width="10" height="7" rx="1.5"/><path d="M5.5 7V5a2.5 2.5 0 015 0v2"/></svg>
+      <span>Your password goes to Keycloak only. The platform checks the signed ID token Keycloak sends back. Your platform role is set by a platform admin, not by Keycloak or Open WebUI.</span>
+    </div>
+  </div>
+  <form class="card login hidden" id="login-form" autocomplete="on">
     <h1>Sign in</h1>
     <p class="lead">Use your Open WebUI account. The platform decides what you can see and do.</p>
     <label class="f" for="email">Email</label>
@@ -252,6 +262,7 @@ dialog::backdrop{background:rgba(10,10,20,.45)}
         <h2 id="id-email"></h2>
         <div class="facts">
           <span><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M8 1.5l5 2v4c0 3.2-2.2 5.6-5 7-2.8-1.4-5-3.8-5-7v-4z"/><path d="M5.8 8l1.6 1.6 2.9-3" stroke-linecap="round" stroke-linejoin="round"/></svg>Identity checked by <b id="id-via">Open WebUI</b></span>
+          <span>Employee ID <code id="id-emp"></code></span>
           <span>Platform role <span class="role" id="id-role"></span></span>
           <span>Namespace <code id="id-ns"></code></span>
         </div>
@@ -440,7 +451,7 @@ async function api(path, opts = {}) {
     headers: { "Content-Type": "application/json", "X-MM-Portal": "1" },
     body: opts.body ? JSON.stringify(opts.body) : undefined,
   });
-  if (res.status === 401 && !opts.noRedirect) { show("login"); throw new Error("signed out"); }
+  if (res.status === 401 && !opts.noRedirect) { showLogin(); throw new Error("signed out"); }
   let data = null; try { data = await res.json(); } catch {}
   if (!res.ok) throw new Error((data && data.detail) || `Request failed (${res.status})`);
   return data;
@@ -488,10 +499,20 @@ function show(view) {
   $("#who").classList.toggle("hidden", view === "login" || view === "loading");
 }
 
-const UI_VERSION = "2026-10-15.2";
+const UI_VERSION = "2026-10-16.1";
+async function showLogin() {
+  let cfg = { sso: false, password: true };
+  try { cfg = await (await fetch("/portal/api/config")).json(); } catch {}
+  $("#sso-card").classList.toggle("hidden", !cfg.sso);
+  $("#login-form").classList.toggle("hidden", cfg.sso || !cfg.password);
+  if (new URLSearchParams(location.search).get("signin") === "failed")
+    $("#sso-err").textContent = "Sign-in did not complete. Try again.";
+  show("login");
+}
 async function boot() {
   show("loading");
-  try { S.me = await api("/portal/api/me", { noRedirect: true }); } catch { show("login"); return; }
+  try { S.me = await api("/portal/api/me", { noRedirect: true }); } catch { await showLogin(); return; }
+  if (location.search) history.replaceState(null, "", location.pathname);
   const m = S.me;
   if (m.ui !== UI_VERSION) { location.reload(); return; }  // this tab holds an older page
   $("#who-name").textContent = m.email;
@@ -508,6 +529,7 @@ async function boot() {
   $("#id-av").textContent = $("#who-av").textContent;
   $("#id-email").textContent = m.email;
   $("#id-via").textContent = m.signed_in_via || "Open WebUI";
+  $("#id-emp").textContent = m.employee_id || "none (email stands in)";
   $("#id-role").textContent = m.role; $("#id-role").className = "role" + (isAdmin ? " admin" : "");
   const ns = m.namespaces[0]; $("#id-ns").textContent = `${ns.org_id} / ${ns.project_id}`;
   $("#tab-admin").classList.toggle("hidden", !isAdmin);
@@ -588,13 +610,14 @@ async function loadUsers() {
       const ways = [h("span", { class: u.allow_app ? "pill neutral" : "pill off" }, "Open WebUI" + (u.allow_app ? "" : " · off"))];
       for (const k of u.keys) ways.push(h("span", { class: k.enabled ? "pill neutral" : "pill off", title: `hash ${k.hash}…` }, k.label + (k.enabled ? "" : " · off")));
       rows.append(h("tr", {},
-        h("td", {}, h("b", {}, u.email), self ? h("span", { class: "muted" }, "  (you)") : null, h("div", {}, h("code", { class: "muted" }, u.namespace))),
+        h("td", {}, h("b", {}, u.email), self ? h("span", { class: "muted" }, "  (you)") : null,
+          h("div", {}, h("span", { class: "muted" }, u.employee_id ? `${u.employee_id} · ` : "no employee ID · "), h("code", { class: "muted" }, u.namespace))),
         h("td", {}, h("span", { class: "role" + (u.role === "admin" ? " admin" : "") }, u.role)),
         h("td", {}, swBtn(u.enabled, () => adminUpdate(u.email, { enabled: !u.enabled }), `Memory for ${u.email}`)),
         h("td", {}, h("div", { style: "display:flex;gap:6px;flex-wrap:wrap" }, ways)),
         h("td", { class: "muted" }, when(u.last_seen)),
         h("td", {}, h("div", { class: "row-acts" },
-          h("button", { class: "btn sm", onclick: () => adminSync(u.email), title: "Look up this person's keys in LiteLLM again" }, "Sync keys"),
+          h("button", { class: "btn sm", onclick: () => adminSync(u.email), title: "Look up this person's employee ID in Corp SSO and their keys in LiteLLM again" }, "Sync"),
           h("button", { class: "btn sm", disabled: self, onclick: () => adminUpdate(u.email, { role: u.role === "admin" ? "user" : "admin" }) }, u.role === "admin" ? "Make user" : "Make admin"),
           h("button", { class: "btn sm danger", disabled: self, onclick: () => openDelete(u.email) }, "Delete")))));
     }
@@ -607,8 +630,9 @@ async function adminUpdate(email, change) {
 async function adminSync(email) {
   try {
     const r = await api("/portal/api/admin/users/sync", { body: { email } });
-    toast(r.lookup !== "ok" ? "LiteLLM lookup is not configured" :
-      `Linked ${r.linked.length ? r.linked.join(", ") : "nothing new"}${r.removed.length ? "; removed " + r.removed.join(", ") : ""}`);
+    const emp = r.employee_id ? `Employee ID ${r.employee_id.from || "none"} → ${r.employee_id.to || "none"}; ` : "";
+    toast(emp + (r.lookup !== "ok" ? "LiteLLM lookup is not configured" :
+      `linked ${r.linked.length ? r.linked.join(", ") : "nothing new"}${r.removed.length ? "; removed " + r.removed.join(", ") : ""}`));
     loadUsers(); loadAudit();
   } catch (e) { toast(e.message); }
 }
@@ -620,7 +644,7 @@ $("#create-form").addEventListener("submit", async e => {
     const r = await api("/portal/api/admin/users", { body: { email, role } });
     const k = r.keys;
     toast(k.lookup !== "ok" ? `Created ${email}; LiteLLM lookup not configured` :
-      `Created ${email}; ${k.linked.length ? "linked " + k.linked.join(", ") : "no personal keys in LiteLLM yet"}`);
+      `Created ${email}${r.account.employee_id ? " (" + r.account.employee_id + ")" : ""}; ${k.linked.length ? "linked " + k.linked.join(", ") : "no personal keys in LiteLLM yet"}`);
     $("#new-email").value = ""; loadUsers(); loadAudit();
   } catch (err) { toast(err.message); }
   finally { $("#create-btn").disabled = false; }
@@ -646,6 +670,9 @@ async function loadTrust() {
         ...(t.services.length ? t.services.map(s => h("div", {}, s, h("small", {}, "service credential, stored as a hash"))) : [h("div", { class: "muted" }, "none")])),
       h("div", { class: "tbox" }, h("h4", {}, "Apps with signed tokens"),
         ...(t.apps.length ? t.apps.map(a => h("div", {}, a.label, h("small", {}, `issuer ${a.issuer} · key ${a.key_hash}…`))) : [h("div", { class: "muted" }, "none")])),
+      h("div", { class: "tbox" }, h("h4", {}, "Corp SSO"),
+        h("div", {}, h("span", { class: t.sso ? "pill ok" : "pill off" }, t.sso ? "connected" : "not configured")),
+        h("small", {}, t.sso ? `${t.sso.issuer} · client ${t.sso.client} · ${t.sso.directory}` : "portal sign-in falls back to Open WebUI passwords")),
       h("div", { class: "tbox" }, h("h4", {}, "Key lookup in LiteLLM"),
         h("div", {}, h("span", { class: t.litellm.configured ? "pill ok" : "pill off" }, t.litellm.configured ? "connected" : "not configured")),
         h("small", {}, t.litellm.configured ? `${t.litellm.role} · ${t.litellm.url}` : "accounts get no keys automatically")));
@@ -789,7 +816,12 @@ $("#login-form").addEventListener("submit", async e => {
   catch (err) { $("#login-err").textContent = err.message; }
   finally { btn.disabled = false; }
 });
-$("#logout").addEventListener("click", async () => { await api("/portal/api/logout", { body: {} }).catch(() => {}); S.turns = []; show("login"); });
+$("#logout").addEventListener("click", async () => {
+  const r = await api("/portal/api/logout", { body: {} }).catch(() => ({}));
+  S.turns = [];
+  if (r && r.logout_url) { location.href = r.logout_url; return; }  // end the Keycloak session too
+  showLogin();
+});
 for (const tab of $$(".tab")) tab.addEventListener("click", () => {
   S.tab = tab.dataset.tab;
   $$(".tab").forEach(t => t.classList.toggle("on", t === tab));

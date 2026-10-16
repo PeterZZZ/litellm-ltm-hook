@@ -9,10 +9,11 @@ platform mode only changes MEMMACHINE_BASE_URL and the headers it sends:
     POST /api/v2/memories/search
     POST /api/v2/memories
 
-Each request is authorized (see authorize.py), then rewritten before it goes to
-core: org_id and project_id come from the platform's registry, never from the
-client, and the producer of a stored user turn is the platform's user id. Only
-the fields the hook is known to send are passed on. Every other path is 404.
+Each request is authorized (see authorize.py): the hook proposes org_id and
+project_id in the body and the platform checks they are the person's before
+anything reaches core. The producer of a stored user turn is still set here,
+since provenance is the platform's to state. Only the fields the hook is known
+to send are passed on. Every other path is 404.
 
     MOCK_PLATFORM_DB=/path/registry.sqlite \
     MOCK_PLATFORM_CORE_URL=http://127.0.0.1:8090 \
@@ -28,7 +29,7 @@ import httpx
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, Response
 
-from .authorize import NOT_ENROLLED, Denied, Principal, authorize
+from .authorize import DECISION_HEADER, NOT_ENROLLED, REQUEST_ID_HEADER, Denied, Principal, authorize
 from .registry import Registry
 
 log = logging.getLogger("mock_platform")
@@ -46,8 +47,9 @@ def create_app(
     owui_url: Optional[str] = None,
     litellm_url: Optional[str] = None,
     litellm_key: Optional[str] = None,
+    sso=None,
 ) -> FastAPI:
-    """The platform API; with `owui_url`, also the My Memory portal at /portal/."""
+    """The platform API; with `owui_url` or `sso`, also the portal at /portal/."""
     app = FastAPI(title="MemMachine mock platform", docs_url=None, redoc_url=None)
     core_url = core_url.rstrip("/")
     known_projects: set[tuple[str, str]] = set()
@@ -55,18 +57,22 @@ def create_app(
     def client() -> httpx.AsyncClient:
         return httpx.AsyncClient(timeout=timeout, transport=transport)
 
-    def decide(request: Request, op: str) -> Principal:
+    def decide(request: Request, op: str, body: dict) -> Principal:
+        request_id = (request.headers.get(REQUEST_ID_HEADER) or "")[:80]
         try:
-            principal = authorize(registry, request.headers)
+            principal = authorize(registry, request.headers, body=body)
         except Denied as exc:
-            log.info("op=%s decision=%s status=%s reason=%r", op, exc.decision, exc.status, exc.reason)
+            log.info("op=%s decision=%s status=%s reason=%r request=%s",
+                     op, exc.decision, exc.status, exc.reason, request_id)
             registry.record(op=op, decision=exc.decision, status=exc.status, reason=exc.reason,
                             **exc.context)
             raise
         u = principal.user
         log.info(
-            "op=%s decision=allow service=%s via=%s key=%s user=%s namespace=%s/%s",
-            op, principal.service, principal.via, principal.key_label, u.email, u.org_id, u.project_id,
+            "op=%s decision=allow service=%s via=%s client=%s key=%s user=%s person=%s "
+            "namespace=%s/%s request=%s",
+            op, principal.service, principal.via, principal.client or "-", principal.key_label,
+            u.email, u.person_id, u.org_id, u.project_id, request_id,
         )
         registry.record(op=op, decision="allow", status=200, service=principal.service,
                         via=principal.via, key_label=principal.key_label, email=u.email,
@@ -78,7 +84,7 @@ def create_app(
         return JSONResponse(
             {"detail": exc.reason},
             status_code=exc.status,
-            headers={"X-MM-Decision": exc.decision},
+            headers={DECISION_HEADER: exc.decision},
         )
 
     @app.get("/healthz")
@@ -87,18 +93,18 @@ def create_app(
 
     @app.post("/api/v2/memories/search")
     async def search(request: Request):
-        principal = decide(request, "search")
         body = await _json_object(request)
+        principal = decide(request, "search", body)
         payload = {k: body[k] for k in _SEARCH_FIELDS if k in body}
         payload.update(org_id=principal.user.org_id, project_id=principal.user.project_id)
         async with client() as c:
             resp = await c.post(f"{core_url}/api/v2/memories/search", json=payload)
-        return _relay(resp, principal)
+        return _relay(resp)
 
     @app.post("/api/v2/memories")
     async def store(request: Request):
-        principal = decide(request, "store")
         body = await _json_object(request)
+        principal = decide(request, "store", body)
         user = principal.user
         messages = []
         for m in body.get("messages") or []:
@@ -107,16 +113,18 @@ def create_app(
             m = {k: m[k] for k in _STORE_MESSAGE_FIELDS if k in m}
             # Provenance is the platform's to state, not the caller's.
             if m.get("role") == "assistant":
-                m["produced_for"] = user.user_id
+                m["produced_for"] = user.org_id
             else:
-                m["producer"] = user.user_id
+                m["producer"] = user.org_id
             meta = dict(m.get("metadata") or {})
-            meta["user_id"] = user.user_id
+            meta["user_id"] = user.person_id
             # Where the memory came from, for the person reviewing it later.
             meta["via"] = principal.via
             meta["source"] = principal.key_label
+            if principal.client:
+                meta["client"] = principal.client
             if not meta.get("session_id") or meta.get("session_id") == "default":
-                meta["session_id"] = user.user_id
+                meta["session_id"] = user.org_id
             m["metadata"] = meta
             messages.append(m)
         payload = {
@@ -128,7 +136,7 @@ def create_app(
         async with client() as c:
             await _ensure_project(c, user.org_id, user.project_id)
             resp = await c.post(f"{core_url}/api/v2/memories", json=payload)
-        return _relay(resp, principal)
+        return _relay(resp)
 
     async def _ensure_project(c: httpx.AsyncClient, org_id: str, project_id: str) -> None:
         if (org_id, project_id) in known_projects:
@@ -145,10 +153,10 @@ def create_app(
         if resp.status_code in (200, 201, 409):
             known_projects.add((org_id, project_id))
 
-    if owui_url:
+    if owui_url or sso:
         from .portal import mount_portal
 
-        mount_portal(app, registry, core_url, owui_url, client, litellm_url, litellm_key)
+        mount_portal(app, registry, core_url, owui_url, client, litellm_url, litellm_key, sso=sso)
 
     return app
 
@@ -163,15 +171,11 @@ async def _json_object(request: Request) -> dict:
     return body
 
 
-def _relay(resp: httpx.Response, principal: Principal) -> Response:
+def _relay(resp: httpx.Response) -> Response:
     return Response(
         content=resp.content,
         status_code=resp.status_code,
         media_type=resp.headers.get("content-type", "application/json"),
-        headers={
-            "X-MM-Org": principal.user.org_id,
-            "X-MM-Project": principal.user.project_id,
-        },
     )
 
 
@@ -190,6 +194,21 @@ def _from_env() -> FastAPI:
         # the platform finds their keys itself instead of trusting what it is told.
         litellm_url=os.environ.get("MOCK_PLATFORM_LITELLM_URL") or None,
         litellm_key=os.environ.get("MOCK_PLATFORM_LITELLM_KEY") or None,
+        sso=_sso_from_env(),
+    )
+
+
+def _sso_from_env():
+    """Corp SSO (Keycloak) for the portal's sign-in and employee-ID lookups."""
+    issuer = os.environ.get("MOCK_PLATFORM_OIDC_ISSUER")
+    if not issuer:
+        return None
+    from .sso import Keycloak
+
+    return Keycloak(
+        issuer,
+        os.environ["MOCK_PLATFORM_OIDC_CLIENT_ID"],
+        os.environ["MOCK_PLATFORM_OIDC_CLIENT_SECRET"],
     )
 
 

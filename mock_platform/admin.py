@@ -46,6 +46,7 @@ def main(argv=None) -> None:
     u_add.add_argument("email")
     u_add.add_argument("--project", default="default")
     u_add.add_argument("--role", choices=("user", "admin"), default="user")
+    u_add.add_argument("--employee-id", help="the person's employee ID; also their org")
     for action in ("enable", "disable"):
         usr.add_parser(action).add_argument("email")
     u_role = usr.add_parser("role", help="set a person's platform role")
@@ -74,7 +75,7 @@ def main(argv=None) -> None:
         credential = reg.add_service(a.label)
         print(credential)  # shown once; only its hash is kept
     elif a.cmd == "user" and a.action == "add":
-        print(json.dumps(reg.add_user(a.email, a.project, a.role).__dict__))
+        print(json.dumps(reg.add_user(a.email, a.project, a.role, a.employee_id).__dict__))
     elif a.cmd == "user" and a.action == "role":
         print(json.dumps(reg.set_role(a.email, a.role).__dict__))
     elif a.cmd == "user":

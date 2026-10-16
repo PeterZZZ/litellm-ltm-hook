@@ -3,11 +3,13 @@
 
 """My Memory: the platform's console for people and for admins.
 
-Sign-in uses the person's Open WebUI account. The portal sends the email and
-password to Open WebUI's own sign-in endpoint and never stores either; a 200
-from Open WebUI is the proof of identity, and its email is looked up in the
-platform registry exactly as a chat request's token would be. What someone may
-do here comes from the platform's own role, never from their Open WebUI role.
+Sign-in is Corp SSO (Keycloak), the same sign-in Open WebUI uses: the portal
+sends people to Keycloak and checks the ID token that comes back (see sso.py).
+Its email and employee ID are looked up in the platform registry exactly as a
+chat request's person would be. Without SSO configured, the portal falls back
+to checking an email and password against Open WebUI's own sign-in endpoint.
+What someone may do here comes from the platform's own role, never from their
+Open WebUI or Keycloak role.
 
 Everyone, about themselves:
     who they are and how that was established, their namespace, the ways in that
@@ -15,8 +17,8 @@ Everyone, about themselves:
     access history, and their memories.
 
 Admins, about everyone:
-    create an account by email (the platform finds that person's personal keys
-    in LiteLLM itself, with a read-only LiteLLM key, so nobody can attach a key
+    create an account by email (the platform takes the employee ID from Corp SSO
+    and finds that person's personal keys in LiteLLM itself, with a read-only LiteLLM key, so nobody can attach a key
     to the wrong owner), delete one, switch memory or roles, see what the
     platform trusts, and read the audit log of every decision.
 
@@ -30,6 +32,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import re
 import secrets
 import time
@@ -37,6 +40,7 @@ from pathlib import Path
 from typing import Callable, Optional
 
 import httpx
+import jwt
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, Response
 
@@ -45,8 +49,11 @@ from .registry import Registry, User
 COOKIE = "mm_portal"
 # Bumped whenever the page and these routes change together. A tab still running
 # an older page sees a different value and reloads itself instead of breaking.
-UI_VERSION = "2026-10-15.2"
+UI_VERSION = "2026-10-16.1"
 SESSION_SECONDS = 8 * 60 * 60
+LOGIN_SECONDS = 10 * 60  # how long a sign-in may sit at Keycloak
+STATE_COOKIE = "mm_portal_login"
+log = logging.getLogger("mock_platform.portal")
 MAX_EPISODES = 5000
 _PAGE = 100
 _STATIC = Path(__file__).parent / "portal_static"
@@ -66,26 +73,43 @@ def mount_portal(
     app: FastAPI,
     registry: Registry,
     core_url: str,
-    owui_url: str,
+    owui_url: Optional[str],
     client: Callable[[], httpx.AsyncClient],
     litellm_url: Optional[str] = None,
     litellm_key: Optional[str] = None,
+    sso=None,
 ) -> None:
-    owui_url = owui_url.rstrip("/")
+    owui_url = (owui_url or "").rstrip("/") or None
     litellm_url = (litellm_url or "").rstrip("/") or None
-    sessions: dict[str, tuple[str, str, float]] = {}  # sid -> (email, name, expires)
+    # sid -> {"email", "name", "employee_id", "id_token", "via", "expires"}
+    sessions: dict[str, dict] = {}
+    # state -> (nonce, redirect_uri, expires): sign-ins sent to Keycloak, not back yet
+    pending: dict[str, tuple[str, str, float]] = {}
 
     # ---------- session plumbing ----------
 
-    def current(request: Request, *, write: bool = False) -> tuple[str, str]:
+    def session(request: Request, *, write: bool = False) -> dict:
         if write and request.headers.get("x-mm-portal") != "1":
             raise HTTPException(403, "missing X-MM-Portal header")
         sid = request.cookies.get(COOKIE) or ""
         entry = sessions.get(sid)
-        if not entry or entry[2] < time.time():
+        if not entry or entry["expires"] < time.time():
             sessions.pop(sid, None)
             raise HTTPException(401, "signed out")
-        return entry[0], entry[1]
+        return entry
+
+    def current(request: Request, *, write: bool = False) -> tuple[str, str]:
+        entry = session(request, write=write)
+        return entry["email"], entry["name"]
+
+    def start_session(who: dict) -> str:
+        sid = secrets.token_urlsafe(32)
+        sessions[sid] = {**who, "expires": time.time() + SESSION_SECONDS}
+        return sid
+
+    def set_session_cookie(resp: Response, sid: str) -> None:
+        resp.set_cookie(COOKIE, sid, max_age=SESSION_SECONDS, httponly=True,
+                        samesite="strict", path="/portal")
 
     def enrolled(request: Request, *, write: bool = False) -> User:
         email, _ = current(request, write=write)
@@ -151,8 +175,9 @@ def mount_portal(
 
     # ---------- LiteLLM, read-only ----------
 
-    async def litellm_keys(email: str) -> Optional[list[dict]]:
-        """Personal keys LiteLLM holds for the user(s) with this email.
+    async def litellm_keys(email: str, employee_id: Optional[str] = None) -> Optional[list[dict]]:
+        """Personal keys LiteLLM holds for this person: users with this email, or
+        whose LiteLLM user_id is their employee ID.
 
         None when the platform has no LiteLLM key configured. Team keys and
         blocked keys are left out: they do not name one person.
@@ -170,7 +195,8 @@ def mount_portal(
                     raise HTTPException(502, f"LiteLLM user lookup failed ({resp.status_code})")
                 data = resp.json()
                 user_ids += [u["user_id"] for u in data.get("users") or []
-                             if str(u.get("user_email") or "").lower() == email.lower()]
+                             if str(u.get("user_email") or "").lower() == email.lower()
+                             or (employee_id and str(u.get("user_id") or "") == employee_id)]
                 if page >= int(data.get("total_pages") or 1):
                     break
                 page += 1
@@ -188,7 +214,7 @@ def mount_portal(
 
     async def sync_keys(user: User) -> dict:
         """Link every personal key LiteLLM holds for this person; unlink gone ones."""
-        found = await litellm_keys(user.email)
+        found = await litellm_keys(user.email, user.employee_id)
         if found is None:
             return {"linked": [], "removed": [], "lookup": "not configured"}
         have = {k.key_hash: k for k in registry.personal_keys(user.user_id)}
@@ -208,6 +234,12 @@ def mount_portal(
                 removed.append(k.label)
         return {"linked": linked, "removed": removed, "lookup": "ok"}
 
+    async def directory(email: str):
+        try:
+            return await sso.person(email)
+        except httpx.HTTPError:
+            raise HTTPException(502, "Corp SSO directory is not reachable") from None
+
     # ---------- shapes for the page ----------
 
     def access_paths(user: User) -> list[dict]:
@@ -222,7 +254,8 @@ def mount_portal(
     def account(user: User, seen: dict[str, float]) -> dict:
         keys = registry.personal_keys(user.user_id)
         return {
-            "email": user.email, "role": user.role, "enabled": user.enabled,
+            "email": user.email, "employee_id": user.employee_id, "role": user.role,
+            "enabled": user.enabled,
             "allow_app": user.allow_app, "namespace": f"{user.org_id}/{user.project_id}",
             "keys": [{"label": k.label, "enabled": k.enabled, "hash": k.key_hash[:12]} for k in keys],
             "created_at": user.created_at, "last_seen": seen.get(user.email.lower()),
@@ -240,8 +273,63 @@ def mount_portal(
 
     # ---------- sign in / out ----------
 
+    @app.get("/portal/api/config")
+    async def config():
+        return {"sso": sso is not None, "provider": "Corp SSO" if sso else None,
+                "password": sso is None and owui_url is not None, "ui": UI_VERSION}
+
+    def redirect_uri(request: Request) -> str:
+        # Back to whichever host the browser used (localhost or 127.0.0.1);
+        # Keycloak only accepts the ones registered for this client.
+        return str(request.base_url).rstrip("/") + "/portal/auth/callback"
+
+    @app.get("/portal/auth/login", include_in_schema=False)
+    async def sso_login(request: Request):
+        if sso is None:
+            raise HTTPException(404, "single sign-on is not configured")
+        now = time.time()
+        for st in [k for k, v in pending.items() if v[2] < now]:
+            pending.pop(st, None)
+        state, nonce = secrets.token_urlsafe(24), secrets.token_urlsafe(24)
+        back = redirect_uri(request)
+        pending[state] = (nonce, back, now + LOGIN_SECONDS)
+        out = RedirectResponse(await sso.login_url(back, state, nonce), status_code=302)
+        # Ties the returning browser to the one that started the sign-in. Lax,
+        # because the return is a top-level navigation from Keycloak.
+        out.set_cookie(STATE_COOKIE, state, max_age=LOGIN_SECONDS, httponly=True,
+                       samesite="lax", path="/portal/auth")
+        return out
+
+    @app.get("/portal/auth/callback", include_in_schema=False)
+    async def sso_callback(request: Request, state: str = "", code: str = "", error: str = ""):
+        if sso is None:
+            raise HTTPException(404, "single sign-on is not configured")
+        entry = pending.pop(state, None)
+        if error or not code or entry is None or entry[2] < time.time() \
+                or request.cookies.get(STATE_COOKIE) != state:
+            return _bounce("/portal/?signin=failed")
+        nonce, back, _ = entry
+        try:
+            claims, id_token = await sso.finish_login(code, back, nonce)
+        except (ValueError, httpx.HTTPError, jwt.PyJWTError) as exc:
+            log.info("portal sign-in refused: %s", exc)
+            return _bounce("/portal/?signin=failed")
+        email = str(claims.get("email") or "")
+        if not email or claims.get("email_verified") is False:
+            return _bounce("/portal/?signin=failed")
+        sid = start_session({
+            "email": email, "name": str(claims.get("name") or ""),
+            "employee_id": claims.get("employee_id"), "id_token": id_token, "via": "sso",
+        })
+        out = _bounce("/portal/")
+        set_session_cookie(out, sid)
+        out.delete_cookie(STATE_COOKIE, path="/portal/auth")
+        return out
+
     @app.post("/portal/api/login")
     async def login(request: Request):
+        if sso is not None or owui_url is None:
+            raise HTTPException(404, "password sign-in is off; use single sign-on")
         if request.headers.get("x-mm-portal") != "1":
             raise HTTPException(403, "missing X-MM-Portal header")
         body = await body_of(request)
@@ -259,18 +347,22 @@ def mount_portal(
             await asyncio.sleep(0.8)  # blunt a password-guessing loop a little
             raise HTTPException(401, "Email or password is incorrect")
         who = resp.json()
-        sid = secrets.token_urlsafe(32)
-        sessions[sid] = (str(who.get("email") or email), str(who.get("name") or ""),
-                         time.time() + SESSION_SECONDS)
+        sid = start_session({"email": str(who.get("email") or email),
+                             "name": str(who.get("name") or ""), "employee_id": None,
+                             "id_token": None, "via": "password"})
         out = JSONResponse({"ok": True})
-        out.set_cookie(COOKIE, sid, max_age=SESSION_SECONDS, httponly=True,
-                       samesite="strict", path="/portal")
+        set_session_cookie(out, sid)
         return out
 
     @app.post("/portal/api/logout")
     async def logout(request: Request):
-        sessions.pop(request.cookies.get(COOKIE) or "", None)
-        out = JSONResponse({"ok": True})
+        entry = sessions.pop(request.cookies.get(COOKIE) or "", None) or {}
+        logout_url = None
+        if sso is not None and entry.get("id_token"):
+            # End the Keycloak session too, or "sign in" would log straight back in.
+            logout_url = await sso.logout_url(entry["id_token"],
+                                              str(request.base_url).rstrip("/") + "/portal/")
+        out = JSONResponse({"ok": True, "logout_url": logout_url})
         out.delete_cookie(COOKIE, path="/portal")
         return out
 
@@ -278,15 +370,20 @@ def mount_portal(
 
     @app.get("/portal/api/me")
     async def me(request: Request):
-        email, name = current(request)
+        entry = session(request)
+        email, name = entry["email"], entry["name"]
+        via = ("Corp SSO (Keycloak), ID token verified" if entry.get("via") == "sso"
+               else "Open WebUI password check")
         user = registry.user_by_email(email)
         if user is None:
             admins = [u.email for u in registry.users() if u.is_admin]
             return {"email": email, "name": name, "enrolled": False, "admins": admins,
+                    "employee_id": entry.get("employee_id"), "signed_in_via": via,
                     "ui": UI_VERSION}
         return {
             "email": email, "name": name, "enrolled": True, "role": user.role, "ui": UI_VERSION,
-            "signed_in_via": "Open WebUI password check",
+            "employee_id": user.employee_id, "sso_employee_id": entry.get("employee_id"),
+            "signed_in_via": via,
             "namespaces": [{
                 "name": user.project_id, "org_id": user.org_id, "project_id": user.project_id,
                 "kind": "Personal", "enabled": user.enabled,
@@ -416,7 +513,13 @@ def mount_portal(
             raise HTTPException(400, "role must be user or admin")
         if registry.user_by_email(email):
             raise HTTPException(409, "that person already has an account")
-        user = registry.add_user(email, role=role)
+        employee_id = None
+        if sso is not None:
+            person = await directory(email)
+            if person is None:
+                raise HTTPException(404, "Corp SSO has no person with that email")
+            email, employee_id = person.email, person.employee_id
+        user = registry.add_user(email, role=role, employee_id=employee_id)
         await core("/api/v2/projects", {"org_id": user.org_id, "project_id": user.project_id,
                                         "description": "mock platform"})
         synced = await sync_keys(user)
@@ -456,11 +559,19 @@ def mount_portal(
         target = registry.user_by_email(str(body.get("email") or ""))
         if target is None:
             raise HTTPException(404, "no such account")
+        employee = None
+        if sso is not None:
+            person = await directory(target.email)
+            if person is not None and person.employee_id != target.employee_id:
+                employee = {"from": target.employee_id, "to": person.employee_id}
+                target = registry.set_employee_id(target.email, person.employee_id)
         synced = await sync_keys(target)
-        registry.record(op="admin:sync-keys", decision="allow", status=200, email=target.email,
-                        reason=f"by {actor.email}; linked {synced['linked'] or 'none'}; "
-                               f"removed {synced['removed'] or 'none'}")
-        return synced
+        registry.record(op="admin:sync", decision="allow", status=200, email=target.email,
+                        reason=f"by {actor.email}; employee ID "
+                               f"{(employee or {}).get('to') or 'unchanged'}; linked "
+                               f"{synced['linked'] or 'none'}; removed {synced['removed'] or 'none'}",
+                        namespace=f"{target.org_id}/{target.project_id}")
+        return {**synced, "employee_id": employee}
 
     @app.post("/portal/api/admin/users/delete")
     async def admin_delete(request: Request):
@@ -487,13 +598,30 @@ def mount_portal(
             "apps": registry.app_keys(),
             "litellm": {"url": litellm_url, "configured": bool(litellm_url and litellm_key),
                         "role": "proxy_admin_viewer (read-only)"},
-            "identity": "Open WebUI password check (portal); signed HS256 token (chat)",
+            "identity": ("Corp SSO (portal sign-in, employee IDs); " if sso else
+                         "Open WebUI password check (portal); ")
+                        + "Open WebUI's signed HS256 token (chat)",
+            "sso": ({"issuer": sso.issuer, "client": sso.client_id,
+                     "directory": "service account, realm-management/view-users (read-only)"}
+                    if sso else None),
         }
 
     @app.get("/portal/api/admin/audit")
     async def admin_audit(request: Request):
         admin(request)
         return {"items": registry.audit(limit=300)}
+
+
+def _bounce(to: str) -> Response:
+    """Land on `to` with a page of our own rather than a redirect.
+
+    After Keycloak, the browser is in a navigation that started on another site;
+    a SameSite=Strict session cookie would not be sent on a redirect within it.
+    A same-origin page that moves on starts a fresh, same-site navigation.
+    """
+    page = (f'<!doctype html><meta charset="utf-8"><meta http-equiv="refresh" content="0;url={to}">'
+            f'<title>Signing in</title><p>Signing in&hellip; <a href="{to}">continue</a></p>')
+    return Response(page, media_type="text/html", headers={"Cache-Control": "no-store"})
 
 
 # ---------- shaping core's episodes for people ----------

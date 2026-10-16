@@ -7,9 +7,10 @@ SQLite, five tables, nothing a real tenant control server would not also need:
 
     services  one row per LiteLLM deployment allowed to call the platform. Only
               the SHA-256 of its credential is stored, as LiteLLM stores keys.
-    users     one row per person: the one namespace this mock gives them, their
-              platform role (user or admin), whether memory is on, and whether
-              requests from Open WebUI may reach it.
+    users     one row per person: their employee ID (from the SSO directory),
+              the one namespace this mock gives them, their platform role (user
+              or admin), whether memory is on, and whether requests from Open
+              WebUI may reach it.
     keys      LiteLLM virtual keys the platform knows, by their SHA-256 hash,
               which is the only form the hook ever sees. A *personal* key names
               its owner and can be switched off by them. An *app* key (Open
@@ -17,6 +18,9 @@ SQLite, five tables, nothing a real tenant control server would not also need:
               signed user token instead.
     apps      for each app key, how to verify the tokens that may ride on it.
     audit     every authorization decision, allowed or not, newest kept.
+
+A person is named by their employee ID, which is also their org; until one is
+known (phase 1, no SSO) the email stands in, slugified for the org.
 
 The platform role is the platform's own: being an Open WebUI admin grants nothing
 here. The app signing secret is stored as given; a real platform would keep it
@@ -79,6 +83,7 @@ _MIGRATIONS = (
     ("users", "allow_app", "INTEGER NOT NULL DEFAULT 1"),
     ("users", "created_at", "REAL"),
     ("keys", "enabled", "INTEGER NOT NULL DEFAULT 1"),
+    ("users", "employee_id", "TEXT"),
 )
 AUDIT_KEEP = 5000
 ROLES = ("user", "admin")
@@ -117,10 +122,16 @@ class User:
     role: str = "user"
     allow_app: bool = True
     created_at: Optional[float] = None
+    employee_id: Optional[str] = None
 
     @property
     def is_admin(self) -> bool:
         return self.role == "admin"
+
+    @property
+    def person_id(self) -> str:
+        """Who this is, as the hook names them: the employee ID, else the email."""
+        return self.employee_id or self.email
 
 
 @dataclass(frozen=True)
@@ -244,18 +255,35 @@ class Registry:
             )
         return credential
 
-    def add_user(self, email: str, project_id: str = "default", role: str = "user") -> User:
+    def add_user(self, email: str, project_id: str = "default", role: str = "user",
+                 employee_id: Optional[str] = None) -> User:
         if role not in ROLES:
             raise ValueError(f"role must be one of {ROLES}")
         email = email.strip()
         user_id = slug(email)
+        employee_id = (employee_id or "").strip() or None
         with self._db:
             self._db.execute(
-                "INSERT INTO users (user_id, email, org_id, project_id, role, created_at) "
-                "VALUES (?, ?, ?, ?, ?, ?)",
-                (user_id, email, user_id, project_id, role, time.time()),
+                "INSERT INTO users (user_id, email, employee_id, org_id, project_id, role, "
+                "created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (user_id, email, employee_id, slug(employee_id or email), project_id, role,
+                 time.time()),
             )
         return self.user(user_id)
+
+    def set_employee_id(self, email: str, employee_id: Optional[str]) -> User:
+        """Record the person's employee ID; their org follows it.
+
+        Memory already stored under the old org stays there: core cannot move it.
+        """
+        employee_id = (employee_id or "").strip() or None
+        user = self._require(email)
+        with self._db:
+            self._db.execute(
+                "UPDATE users SET employee_id = ?, org_id = ? WHERE user_id = ?",
+                (employee_id, slug(employee_id or user.email), user.user_id),
+            )
+        return self.user(user.user_id)
 
     def delete_user(self, email: str) -> User:
         user = self._require(email)
@@ -318,7 +346,8 @@ class Registry:
         q = lambda sql: [dict(r) for r in self._db.execute(sql)]  # noqa: E731
         return {
             "services": q("SELECT label FROM services ORDER BY label"),
-            "users": q("SELECT user_id, email, role, org_id, project_id, enabled, allow_app "
+            "users": q("SELECT user_id, email, employee_id, role, org_id, project_id, enabled, "
+                       "allow_app "
                        "FROM users ORDER BY email"),
             "keys": q(
                 "SELECT label, kind, user_id, enabled, substr(key_hash, 1, 12) AS key_hash "

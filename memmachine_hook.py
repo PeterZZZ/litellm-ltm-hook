@@ -53,23 +53,33 @@ Environment variables:
                          platform (tenant control server), not core, and
                          MEMMACHINE_API_KEY is this LiteLLM's service credential for
                          it. The hook stops deciding identity or namespace: it
-                         forwards the evidence (key hash, Open WebUI token) and the
-                         platform authenticates and authorizes. The signing secret
-                         then belongs to the platform, so
-                         FORWARD_USER_INFO_HEADER_JWT_SECRET must be unset here.
+                         proposes the person and namespace, forwards the evidence
+                         (key hash, Open WebUI token), and the platform authenticates
+                         and authorizes. The signing secret then belongs to the
+                         platform, so FORWARD_USER_INFO_HEADER_JWT_SECRET must be
+                         unset here.
+  MEMMACHINE_OWUI_USER_CLAIM  platform mode: which claim of Open WebUI's token names
+                         the person. Default email (phase 1). With Corp SSO, Open WebUI
+                         copies the employee ID into the user's name, so set name.
 
-Platform mode:
+Platform mode (the shared Platform API, the same for every front end):
   Every search and store carries
       Authorization: Bearer <MEMMACHINE_API_KEY>   which LiteLLM is calling
-      X-MM-Key-Hash: <sha256 of the virtual key>   LiteLLM never exposes the raw key
+      X-MemMachine-Key-Id: <sha256 of the key>     LiteLLM never exposes the raw key
                                                    to callbacks, and must not
-      X-MM-User-Token: <Open WebUI token>          passed through, unverified here
-      X-MM-Request-Started: <epoch seconds>        store only, so a token is judged
-                                                   at request start
-  and no org_id/project_id: the platform sets both and the producer. Namespace
-  headers from clients are not forwarded. A 403 carrying X-MM-Decision:
-  not-enrolled means memory is off for this person, and the request goes on
-  without memory; any other 401/403 is a refusal, as below.
+      X-MemMachine-Key-Owner: <LiteLLM user_id>    the key's owner
+      X-MemMachine-User: <person>                  Open WebUI: the token's
+                                                   MEMMACHINE_OWUI_USER_CLAIM, read
+                                                   unverified; else the key's owner
+      X-MemMachine-User-Assertion: <Open WebUI token>  passed through, unverified
+      X-MemMachine-Project, X-MemMachine-Client, X-Request-Id
+      X-MemMachine-Request-Started: <epoch seconds>  store only, so a token is
+                                                   judged at request start
+  and a body whose org_id is the person (slugified to MemMachine's character set)
+  and project_id is x-memmachine-project, else MEMMACHINE_PROJECT_ID. The platform
+  verifies all of it; a client x-memmachine-org header is ignored. A 403 carrying
+  X-MemMachine-Decision: not-enrolled means memory is off for this person, and the
+  request goes on without memory; any other 401/403 is a refusal, as below.
 
 Isolation model:
   Identity is the virtual key owner's email, or the verified email claim of Open
@@ -117,7 +127,9 @@ MemMachine API (self-hosted, /api/v2 prefix) — verified notes
     self-hosted (openapi) uses /api/v2 prefix and has no top-level user_id/agent_id.
 """
 
+import base64
 import hashlib
+import json
 import logging
 import os
 import re
@@ -187,6 +199,7 @@ MODEL_ALLOWLIST = {
 }
 MODEL_PREFIX = os.environ.get("MEMMACHINE_MODEL_PREFIX", "memmachine-")
 PLATFORM_MODE = os.environ.get("MEMMACHINE_PLATFORM", "").strip() == "1"
+OWUI_USER_CLAIM = os.environ.get("MEMMACHINE_OWUI_USER_CLAIM", "email").strip() or "email"
 
 # Forwarded identity. Unset secret = off, and the hook behaves exactly as before.
 # The variable deliberately carries Open WebUI's own name: it is the same secret,
@@ -448,21 +461,58 @@ def _key_hash(value) -> Optional[str]:
     return hashlib.sha256(raw.encode()).hexdigest()
 
 
-def _platform_headers(data, user_api_key_dict=None, started_at=None) -> dict:
-    """The evidence a platform-mode request carries. The hook judges none of it."""
+def _peek_claims(token: str) -> dict:
+    """A JWT's claims, NOT verified. Only to propose who the person is; the
+    platform verifies the token and refuses a proposal the token does not back."""
+    try:
+        payload = token.split(".")[1]
+        payload += "=" * (-len(payload) % 4)
+        claims = json.loads(base64.urlsafe_b64decode(payload))
+    except (IndexError, ValueError):
+        return {}
+    return claims if isinstance(claims, dict) else {}
+
+
+def _platform_request(data, user_api_key_dict=None, started_at=None):
+    """Headers, org_id and project_id for a platform-mode call.
+
+    The adapter step: work out who the person is from what this front end sends
+    (Open WebUI's token, or the virtual key's owner) and propose their namespace.
+    It decides nothing; the platform checks every value against what it verifies.
+    """
     headers = _headers()
     metadata = data.get("metadata") or {}
+    request_headers = _request_headers(data)
     key_hash = _key_hash(
         getattr(user_api_key_dict, "api_key", None) or metadata.get("user_api_key_hash")
     )
     if key_hash:
-        headers["X-MM-Key-Hash"] = key_hash
-    token = str(_header(_request_headers(data), FORWARDED_USER_JWT_HEADER) or "").strip()
+        headers["X-MemMachine-Key-Id"] = key_hash
+    owner = str(
+        getattr(user_api_key_dict, "user_id", None) or metadata.get("user_api_key_user_id") or ""
+    ).strip()
+    if owner:
+        headers["X-MemMachine-Key-Owner"] = owner
+    token = str(_header(request_headers, FORWARDED_USER_JWT_HEADER) or "").strip()
     if token:
-        headers["X-MM-User-Token"] = token
+        headers["X-MemMachine-User-Assertion"] = token
+        person = str(_peek_claims(token).get(OWUI_USER_CLAIM) or "").strip()
+    else:
+        person = owner
+    if person:
+        headers["X-MemMachine-User"] = person
+    org_id = _to_org_id(person) if person else ""
+    project_id = str(_header(request_headers, "x-memmachine-project") or PROJECT_ID).strip()
+    headers["X-MemMachine-Project"] = project_id
+    headers["X-MemMachine-Client"] = (
+        "claude-code" if _is_claude_code_request(data) else "openwebui" if token else "other"
+    )
+    request_id = data.get("litellm_call_id") or metadata.get("litellm_call_id")
+    if request_id:
+        headers["X-Request-Id"] = str(request_id)
     if started_at is not None:
-        headers["X-MM-Request-Started"] = f"{started_at:.3f}"
-    return headers
+        headers["X-MemMachine-Request-Started"] = f"{started_at:.3f}"
+    return headers, org_id, project_id
 
 
 def _not_enrolled(resp) -> bool:
@@ -470,7 +520,7 @@ def _not_enrolled(resp) -> bool:
     return (
         resp is not None
         and resp.status_code == 403
-        and str(resp.headers.get("x-mm-decision", "")).lower() == "not-enrolled"
+        and str(resp.headers.get("x-memmachine-decision", "")).lower() == "not-enrolled"
     )
 
 
@@ -844,13 +894,12 @@ class MemMachineHook(CustomLogger):
         # org-set + project-set scope and keeps mixed/all searches compatible.
         search_body = {"query": query, "top_k": TOP_K, "types": SEARCH_TYPES}
         if PLATFORM_MODE:
-            # The platform names the namespace; these two are for logs only.
-            org_id = project_id = "<platform>"
-            headers = _platform_headers(data, user_api_key_dict)
+            # Proposed here, verified by the platform.
+            headers, org_id, project_id = _platform_request(data, user_api_key_dict)
         else:
             _, org_id, project_id, _ = _identity(data, user_api_key_dict)
-            search_body = {"org_id": org_id, "project_id": project_id, **search_body}
             headers = _headers()
+        search_body = {"org_id": org_id, "project_id": project_id, **search_body}
         request_id = data.get("litellm_call_id")
 
         try:
@@ -864,9 +913,6 @@ class MemMachineHook(CustomLogger):
                     _log("search: platform says not enrolled — continuing without memory")
                     return data
                 resp.raise_for_status()
-                if PLATFORM_MODE:
-                    org_id = resp.headers.get("x-mm-org", org_id)
-                    project_id = resp.headers.get("x-mm-project", project_id)
                 body = resp.json()
                 if not isinstance(body, dict):
                     raise ValueError("MemMachine search response must be a JSON object")
@@ -1072,16 +1118,16 @@ class MemMachineHook(CustomLogger):
                 )
         try:
             if PLATFORM_MODE:
-                # The platform sets org, project, producer and the person's
-                # session; the hook passes a client-chosen session through only.
-                user_id, org_id, project_id = "", "<platform>", "<platform>"
+                # Proposed here, verified by the platform, which also states the
+                # producer and fills in the person's session when none is given.
+                store_headers, org_id, project_id = _platform_request(
+                    request, user_api_key_dict, started_at=_started_at(start_time)
+                )
+                user_id = org_id
                 session_id = (
                     _header(_request_headers(request), "x-memmachine-session")
                     or meta.get("session_id")
                     or ""
-                )
-                store_headers = _platform_headers(
-                    request, user_api_key_dict, started_at=_started_at(start_time)
                 )
             else:
                 user_id, org_id, project_id, session_id = _identity(
@@ -1113,7 +1159,8 @@ class MemMachineHook(CustomLogger):
             "group_id": "default",
         }
         payload = {
-            **({} if PLATFORM_MODE else {"org_id": org_id, "project_id": project_id}),
+            "org_id": org_id,
+            "project_id": project_id,
             "types": [],
             "messages": [
                 {
@@ -1145,9 +1192,6 @@ class MemMachineHook(CustomLogger):
                     _log("store: platform says not enrolled — nothing stored")
                     return
                 resp.raise_for_status()
-                if PLATFORM_MODE:
-                    org_id = resp.headers.get("x-mm-org", org_id)
-                    project_id = resp.headers.get("x-mm-project", project_id)
         except httpx.HTTPStatusError as exc:
             status_code = exc.response.status_code
             _log_error(

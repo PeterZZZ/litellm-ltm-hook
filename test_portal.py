@@ -104,11 +104,16 @@ def login(world, email="alice@corp.example", password=None):
                              json={"email": email, "password": password or PASSWORDS[email]})
 
 
-def evidence(world, key, token=None):
-    h = {"authorization": f"Bearer {world.svc}", "x-mm-key-hash": sha256(key)}
+def evidence(world, key, token=None, user=None):
+    h = {"authorization": f"Bearer {world.svc}", "x-memmachine-key-id": sha256(key)}
     if token:
-        h["x-mm-user-token"] = token
+        h["x-memmachine-user-assertion"] = token
+    if user:
+        h["x-memmachine-user"] = user
     return h
+
+
+ALICE_SEARCH = {"query": "x", "org_id": "alice_corp_example", "project_id": "default"}
 
 
 class TestSignIn:
@@ -158,11 +163,11 @@ class TestOwnMemoryOnly:
 class TestWaysIn:
     def test_switching_off_open_webui_stops_the_app_path_only(self, world, monkeypatch):
         import mock_platform.authorize as az
-        monkeypatch.setattr(az, "_verify_token", lambda *a, **k: "alice@corp.example")
+        monkeypatch.setattr(az, "_verify_token", lambda *a, **k: {"email": "alice@corp.example"})
         login(world)
         world.client.post("/portal/api/access", headers=W, json={"id": "openwebui", "enabled": False})
         with pytest.raises(Denied) as exc:
-            authorize(world.reg, evidence(world, "sk-app", token="t"))
+            authorize(world.reg, evidence(world, "sk-app", token="t", user="alice@corp.example"))
         assert exc.value.decision == "not-enrolled"
         assert authorize(world.reg, evidence(world, "sk-alice")).user.email == "alice@corp.example"
 
@@ -248,9 +253,9 @@ class TestAdmin:
         assert bob.is_admin and not bob.enabled
 
     def test_audit_records_decisions_and_admin_actions(self, world):
-        world.client.post("/api/v2/memories/search", json={"query": "x"},
+        world.client.post("/api/v2/memories/search", json=ALICE_SEARCH,
                           headers=evidence(world, "sk-alice"))
-        world.client.post("/api/v2/memories/search", json={"query": "x"},
+        world.client.post("/api/v2/memories/search", json=ALICE_SEARCH,
                           headers={**evidence(world, "sk-alice"), "authorization": "Bearer nope"})
         login(world, "root@corp.example")
         world.client.post("/portal/api/admin/users/update", headers=W,
@@ -263,7 +268,7 @@ class TestAdmin:
         assert allowed["email"] == "alice@corp.example" and allowed["via"] == "personal-key"
 
     def test_history_shows_only_own_decisions(self, world):
-        world.client.post("/api/v2/memories/search", json={"query": "x"}, headers=evidence(world, "sk-alice"))
+        world.client.post("/api/v2/memories/search", json=ALICE_SEARCH, headers=evidence(world, "sk-alice"))
         world.reg.record(op="search", decision="allow", status=200, email="bob@corp.example")
         login(world)
         items = world.client.get("/portal/api/history").json()["items"]

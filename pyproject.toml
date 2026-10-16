@@ -24,4 +24,6 @@ dependencies = [
 platform = [
     "fastapi",
     "uvicorn",
+    # RS256 ID tokens from the SSO provider (Keycloak) at portal sign-in.
+    "pyjwt[crypto]",
 ]
