@@ -2,16 +2,14 @@
 
 This guide covers the current MemMachine integration in `litellm-ltm-hook`.
 
-Seven test files, in increasing scope:
+Test files, in increasing scope:
 
 | File | Scope | Requires |
 |------|-------|----------|
-| `test_hook.py` | unit + live (httpx-mocked + direct MemMachine API) | `httpx`, `pytest`; live needs `MEMMACHINE_BASE_URL` set and reachable |
-| `test_identity.py` | unit: the forwarded signed-identity path | `pyjwt`, `pytest`; no network |
+| `test_hook.py` | unit: the hook's core and both adapters (Claude Code, Open WebUI), platform and direct mode, identity, refusals, retries, dead letters, replay | `httpx`, `pyjwt`, `pytest`; no network |
 | `test_platform.py` | unit: the mock platform's authorize() rules and request rewriting | `uv run --group platform`; no network |
 | `test_portal.py` | unit: the portal (password sign-in via Open WebUI, own-namespace-only, switch, enroll) | `uv run --group platform`; no network |
 | `test_sso.py` | unit: Corp SSO in the portal (Keycloak code flow, ID-token checks, employee IDs from the directory) | `uv run --group platform`; no network |
-| `test_platform_mode.py` | unit: the hook in platform mode (`MEMMACHINE_PLATFORM=1`) | `pytest`; no network |
 | `test_e2e_store.py` | end-to-end store path through the litellm proxy | litellm-test proxy up, virtual key, MemMachine up |
 | `test_e2e_recall.py` | end-to-end 2-turn recall through the litellm proxy | same as above |
 | `tools/platform_e2e.py` | end-to-end: Corp SSO → Open WebUI → LiteLLM → mock platform → core (17 checks) | the full stack up, Keycloak included; see the script's docstring |
@@ -19,18 +17,19 @@ Seven test files, in increasing scope:
 
 ---
 
-## `test_hook.py` — unit + live (pytest)
+## `test_hook.py` — unit (pytest)
 
-Unit tests mock httpx and verify the hook's parsing, injection, and store logic.
-Live tests call the configured `MEMMACHINE_BASE_URL` directly (no proxy) to verify the add→search→inject flow.
+The platform (and MemMachine) is an `httpx.MockTransport`; nothing is called over
+the network. The tests run in platform mode (the file sets `MEMMACHINE_PLATFORM=1`);
+`TestDirectMode` switches to direct mode per test. Claude Code's tests replay
+real Claude Code traffic from `fixtures/`. A few tests start a fresh Python to
+check how the hook loads (as LiteLLM loads it, and the signing-secret guard).
 
 ```bash
-# unit + live (requires MEMMACHINE_BASE_URL set and reachable)
-uv run pytest test_hook.py -v
-
-# unit only (skip live tests)
-MEMMACHINE_LIVE=0 uv run pytest test_hook.py -v
+uv run pytest test_hook.py -q
 ```
+
+The e2e scripts below cover the live paths.
 
 ---
 

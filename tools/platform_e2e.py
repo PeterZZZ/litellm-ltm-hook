@@ -147,18 +147,18 @@ s, a = chat(LL, keys["CAROL_VIRTUAL_KEY"], QUESTION)
 check("carol's personal key (not registered): chat works, no memory", s == 200 and FACT not in a, a)
 
 s, a = chat(LL, keys["OPENWEBUI_APP_KEY"], QUESTION)
-check("app key with no user token: 401", s == 401, a)
+check("app key with no user token: chat works, no memory", s == 200 and FACT not in a, a)
 
 s, a = chat(LL, keys["OPENWEBUI_APP_KEY"], QUESTION,
             {"x-openwebui-user-jwt": mint("alice@corp.example", secret="forged-" + "x" * 40)})
-check("app key + forged token: 401", s == 401, a)
+check("app key + forged token: chat works, no memory", s == 200 and FACT not in a, a)
 
 s, a = chat(LL, keys["OPENWEBUI_APP_KEY"], QUESTION,
             {"x-openwebui-user-jwt": mint("alice@corp.example", ttl=-600)})
-check("app key + expired token: 401", s == 401, a)
+check("app key + expired token: chat works, no memory", s == 200 and FACT not in a, a)
 
 s, a = chat(LL, keys["BOB_VIRTUAL_KEY"], QUESTION, {"x-openwebui-user-jwt": mint("alice@corp.example")})
-check("alice's valid token replayed on bob's key: 401", s == 401, a)
+check("alice's valid token replayed on bob's key: chat works, no memory", s == 200 and FACT not in a, a)
 
 s, a = chat(LL, keys["ALICE_VIRTUAL_KEY"], QUESTION, {"x-memmachine-org": "E67890"})
 check("alice's key + x-memmachine-org: E67890 (bob) -> header ignored, still alice", s == 200 and FACT in a, a)
@@ -168,10 +168,11 @@ check("platform called directly with a guessed service credential: 401", s == 40
 
 # Alice edits her Open WebUI display name to Bob's employee ID. Open WebUI signs
 # whatever name she has, so the token is valid; the platform knows E67890 is not
-# the person behind alice@corp.example and refuses.
+# the person behind alice@corp.example and refuses. The hook never fails a chat
+# over memory: it goes on without any.
 post(f"{OWUI}/api/v1/auths/update/profile", {"name": "E67890", "profile_image_url": "/user.png"}, alice)
 s, a = chat(OW, alice, QUESTION)
-check("alice renamed to bob's employee ID: refused", s != 200 and FACT not in a, f"{s} {a}")
+check("alice renamed to bob's employee ID: chat works, no memory", s == 200 and FACT not in a, f"{s} {a}")
 alice = owui_login("alice@corp.example")  # signing in again restores the name from SSO
 check("signing in again restores her name from Corp SSO", owui_me(alice)["name"] == "E12345",
       owui_me(alice)["name"])

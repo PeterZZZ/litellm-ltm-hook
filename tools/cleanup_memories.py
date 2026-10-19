@@ -43,7 +43,7 @@ if not BASE:
           file=sys.stderr)
     sys.exit(2)
 
-# Mirror of memmachine_hook._to_org_id: MemMachine org_id only allows
+# Mirror of memmachine_hook.org_of: MemMachine org_id only allows
 # letters, digits, _, -, :, and Unicode (CJK). Replace everything else with _.
 _ORG_ID_ALLOWED = re.compile(r"[^A-Za-z0-9_:\-]")
 

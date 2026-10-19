@@ -22,3 +22,6 @@ venv/
 .vscode/
 *.swp
 *.swo
+
+# the hook: undelivered stores (they hold prompts and answers)
+dead-letter.jsonl*

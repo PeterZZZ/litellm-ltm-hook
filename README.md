@@ -13,14 +13,18 @@ For requests handled by the MemMachine hook:
 - **Before** the LLM call: relevant memories for the current user are searched and injected as a `<memory>` system block — a `role:system` message inserted right before the last user message, on all three routes (`/v1/chat/completions`, `/v1/messages`, `/v1/responses`).
 - **After** the response: the user's message and the assistant's reply are stored back to the selected MemMachine `(org, project)` namespace.
 
-Clients don't need to change — OpenAI Chat Completions (`/v1/chat/completions`), OpenAI Responses (`/v1/responses`), and Anthropic Messages (`/v1/messages`) all work. The user's identity is the virtual key owner's email, or — for applications that reach LiteLLM through one shared virtual key — the verified email in Open WebUI's signed user token. Either way it is slugified for `producer`/`produced_for`. Requests identified by a virtual key may select a namespace with `x-memmachine-org` and `x-memmachine-project` (a token-identified request is refused if it sends them); otherwise the slugified user and `default` project are used.
+The hook is a core plus one adapter per frontend (`memmachine_adapters/`): the core decides who the person is, talks to MemMachine (or the platform), and stores with retries; an adapter decides what a turn is for its frontend. **Claude Code** (`claude_code.py`) has its own turn model: one search per typed prompt, shared by every request of the turn, one stored pair per prompt, subagent hand-backs held until the turn is done. **Open WebUI and every other client** (`openwebui.py`) get one turn per request, as described here. Memory never fails a request: a refused or failed search means no memory for that prompt; a failed store is retried and then kept in a dead-letter file for `python memmachine_hook.py replay` (one the platform refuses with 403 is dropped).
+
+Clients don't need to change — OpenAI Chat Completions (`/v1/chat/completions`), OpenAI Responses (`/v1/responses`), and Anthropic Messages (`/v1/messages`) all work. The user's identity is the virtual key owner's email, or — for applications that reach LiteLLM through one shared virtual key — the verified email in Open WebUI's signed user token. Either way it is slugified for `producer`/`produced_for`. Requests identified by a virtual key may select a namespace with `x-memmachine-org` and `x-memmachine-project` (a token-identified request that sends them gets no memory); otherwise the slugified user and `default` project are used.
 
 ## Files
 
 | Path | Purpose |
 |------|---------|
-| `memmachine_hook.py` | MemMachine callback hook (single file, no deps beyond `httpx` + `litellm`) |
-| `test_hook.py` | Unit + live tests (httpx-mocked parsing/injection/store logic + direct MemMachine API) |
+| `memmachine_hook.py` | MemMachine callback hook: the core (identity in both modes, MemMachine/platform client, search, store, retries, dead letters, trace). Its docstring lists every setting |
+| `memmachine_adapters/` | One adapter per frontend: `claude_code.py` (Claude Code's turn model), `openwebui.py` (one request = one turn; Open WebUI and every other client) |
+| `test_hook.py`, `fixtures/` | Unit tests (httpx-mocked): both adapters, both modes, identity, refusals, retries, replay; recorded Claude Code traffic |
+| `tools/litellm-admin.sh` | LiteLLM admin: people and their virtual keys (add, rotate, block, remove), Open WebUI's shared key, the Claude Code settings block |
 | `test_e2e_store.py` | E2E: store path through the litellm proxy → MemMachine |
 | `test_e2e_recall.py` | E2E: 2-turn recall through the litellm proxy → MemMachine |
 | `tools/cleanup_memories.py` | Utility: delete all episodic memories in a MemMachine project |
@@ -32,7 +36,7 @@ Clients don't need to change — OpenAI Chat Completions (`/v1/chat/completions`
 
 ### 1. Mount the hook into the LiteLLM container
 
-The hook file needs to be on the LiteLLM proxy's Python import path so the `callbacks` entry can import it. Standard pattern: mount it at `/app/memmachine_hook.py` (LiteLLM's working directory is `/app`).
+The hook file and the `memmachine_adapters/` folder need to be on the LiteLLM proxy's Python import path, side by side, so the `callbacks` entry can import them. Standard pattern: mount both under `/app` (LiteLLM's working directory).
 
 `docker-compose.yml` (snippet — keep your existing service config):
 ```yaml
@@ -40,6 +44,7 @@ services:
   litellm:
     volumes:
       - ./memmachine_hook.py:/app/memmachine_hook.py:ro
+      - ./memmachine_adapters:/app/memmachine_adapters:ro
       - ./config.yaml:/app/config.yaml:ro
     command:
       - "--config"
@@ -51,10 +56,9 @@ services:
       MEMMACHINE_PROJECT_ID: "default"
       MEMMACHINE_AGENT_ID: "litellm"
       MEMMACHINE_TOP_K: "8"
-      MEMMACHINE_TIMEOUT: "5"
+      MEMMACHINE_TIMEOUT: "10"
       MEMMACHINE_SEARCH_TYPES: "episodic"
       MEMMACHINE_MODEL_PREFIX: "memmachine-"
-      MEMMACHINE_CLAUDE_CODE_STRIP_SYSTEM_TAGS: "1"
       MEMMACHINE_DEBUG: "0"          # set "1" when debugging
 ```
 
@@ -91,32 +95,36 @@ docker logs -f <litellm-container>   # look for "Initialized Callbacks" with Mem
 
 ## Environment variables
 
+The main ones; `memmachine_hook.py`'s docstring has every setting (store retries, dead-letter path, trace, Claude Code's options). Names in brackets are older names from the Claude Code side, still read when the main name is unset.
+
 | Var | Default | Notes |
 |-----|---------|-------|
-| `MEMMACHINE_BASE_URL` | — (required, no default) | MemMachine server URL. Must be set in `.env` or the real environment; the hook refuses to start without it. |
-| `MEMMACHINE_API_KEY` | (none) | Only for deployments requiring auth; leave empty for the default self-hosted setup |
-| `MEMMACHINE_PROJECT_ID` | `default` | Default project when `x-memmachine-project` is absent |
-| `MEMMACHINE_AGENT_ID` | `litellm` | Used as `producer` for assistant utterances |
+| `MEMMACHINE_BASE_URL` | — (required, no default) | MemMachine server URL (or the platform's, in platform mode). Must be set in `.env` or the real environment; the hook refuses to start without it. |
+| `MEMMACHINE_PLATFORM` | (unset) | `1` = platform mode (see below); unset = the hook talks to MemMachine directly |
+| `MEMMACHINE_API_KEY` [`MEMMACHINE_SERVICE_CREDENTIAL`] | (none) | Direct mode: only for deployments requiring auth. Platform mode: required, this LiteLLM's service credential |
+| `MEMMACHINE_PROJECT_ID` [`MEMMACHINE_DEFAULT_PROJECT`] | `default` | Default project when `x-memmachine-project` is absent |
+| `MEMMACHINE_AGENT_ID` | `litellm` | Used as `producer` for assistant utterances (Open WebUI adapter) |
+| `MEMMACHINE_CLAUDE_CODE_AGENT_ID` | `claude-code` | The Claude Code adapter's agent id and `X-MemMachine-Client` |
 | `MEMMACHINE_TOP_K` | `8` | Search result count |
-| `MEMMACHINE_TIMEOUT` | `5` | HTTP timeout (seconds) for MemMachine calls |
+| `MEMMACHINE_TIMEOUT` [`MEMMACHINE_SEARCH_TIMEOUT`] | `10` | Seconds a search may take before the prompt goes on without memory (stores: `MEMMACHINE_STORE_TIMEOUT`, 30) |
 | `MEMMACHINE_MODELS` | (empty) | Optional comma-separated allowlist; empty = rely on prefix only |
 | `MEMMACHINE_MODEL_PREFIX` | `memmachine-` | Only model names with this prefix get the hook; empty string disables the check (applies to all models) |
 | `MEMMACHINE_SEARCH_TYPES` | `episodic` | `episodic`, `semantic`, or a comma-separated combination. `all`, `*`, empty, and `[]` request all types; unknown values fail at startup |
-| `MEMMACHINE_CLAUDE_CODE_STRIP_SYSTEM_TAGS` | `1` | For `User-Agent: claude-cli/...` requests, strip complete line-leading XML-like wrapper blocks from memory search/store text. Set to `0` to disable; the LLM request itself is never changed. |
 | `MEMMACHINE_DEBUG` | (off) | `1` enables verbose stderr diagnostics. Failures always use the standard logger regardless of this setting. |
-| `FORWARD_USER_INFO_HEADER_JWT_SECRET` | (none) | The secret Open WebUI signs its user token with — the same variable name Open WebUI uses, because it is the same secret. Unset leaves identity on the virtual key alone. Setting it requires PyJWT. |
-| `MEMMACHINE_FORWARDED_USER_JWT_HEADER` | `x-openwebui-user-jwt` | Header carrying that token |
+| `FORWARD_USER_INFO_HEADER_JWT_SECRET` | (none) | Direct mode: the secret Open WebUI signs its user token with — the same variable name Open WebUI uses, because it is the same secret. Unset leaves identity on the virtual key alone. Setting it requires PyJWT. Platform mode: must be unset (the hook refuses to start with it) |
+| `MEMMACHINE_FORWARDED_USER_JWT_HEADER` [`MEMMACHINE_USER_ASSERTION_HEADER`] | `x-openwebui-user-jwt` | Header carrying that token |
+| `MEMMACHINE_OWUI_USER_CLAIM` [`MEMMACHINE_USER_ASSERTION_CLAIM`] | `email` | Platform mode: the token claim naming the person (`name` with Corp SSO) |
 | `MEMMACHINE_FORWARDED_USER_JWT_ISSUER` | `open-webui` | The `iss` claim the token must carry |
 | `MEMMACHINE_FORWARDED_USER_JWT_LEEWAY` | `30` | Seconds of clock difference tolerated between Open WebUI and LiteLLM. `0` requires the two clocks to agree exactly |
 
 ## How user identity works
 
-`_identity()` accepts an email from one of two sources:
+This is direct mode (`direct_identity()`); platform mode is below. Identity is resolved once, before the model call, and kept with the turn until it is stored. The hook accepts an email from one of two sources:
 
-- the authenticated virtual key owner — `user_api_key_dict.user_email` in `async_pre_call_hook`, flattened `user_api_key_user_email` in `async_log_success_event`
+- the authenticated virtual key owner — `user_api_key_dict.user_email`
 - the `email` claim of Open WebUI's signed user token, when `FORWARD_USER_INFO_HEADER_JWT_SECRET` is set and the request carries one
 
-The body `user`, request `metadata.user_id`, `x-memmachine-user`, and virtual-key UUID are not identity fallbacks. An in-scope request without either source fails instead of sharing a `default` identity.
+The body `user`, request `metadata.user_id`, `x-memmachine-user`, and virtual-key UUID are not identity fallbacks. An in-scope request without either source gets no memory instead of sharing a `default` identity.
 
 The email is slugified once and the result is the canonical MemMachine user used by `producer` and `produced_for`. It is also the default personal org:
 
@@ -156,18 +164,17 @@ FORWARD_USER_INFO_HEADER_JWT_SECRET=<secret>
 With the secret set, a request carrying a valid token is identified by the token
 rather than by the virtual key. The signature, the `iss` claim and the expiry are
 all checked, and `HS256` is pinned so a token declaring `alg: none` is refused. A
-token that is present but does not verify fails the request with **401**, on
-every route and even when the request would not have searched memory; it is
+token that is present but does not verify gets **no memory** (nothing searched,
+nothing stored; the chat itself goes on, as with any memory failure); it is
 never quietly downgraded to the shared key's identity. This applies to requests
 the hook acts on. A request it skips — `x-memmachine-disable: 1`, or a model
 outside `MEMMACHINE_MODEL_PREFIX` — is not inspected at all, so a bad token on
-one is neither rejected nor able to reach any memory. The store path runs after
-the model has answered, so the expiry is judged against the moment the request
-started rather than the moment the memory is written.
+one cannot reach any memory. The token is checked before the model is called
+and the identity is kept with the turn, so a token that expires while the model
+answers still lets the turn be stored.
 
 On a request identified this way, `x-memmachine-org` and `x-memmachine-project`
-are refused with **401**, under the same rule as a bad token: even when the
-request would not have searched memory. The two rules belong together: behind a shared key the
+mean **no memory**, under the same rule as a bad token. The two rules belong together: behind a shared key the
 token is the only thing separating one person's memory from another's, and a
 header that re-points the namespace would undo exactly that. This is the
 namespace authorization the note above calls for, in the one case where the hook
@@ -215,11 +222,17 @@ request headers accordingly.
 
 ## Platform mode (experimental)
 
-With `MEMMACHINE_PLATFORM=1` the hook stops deciding identity or namespace. It
+With `MEMMACHINE_PLATFORM=1` the hook stops deciding identity or namespace (the
+adapters are the same in both modes). It
 speaks the shared Platform API (`X-MemMachine-*` headers): it proposes the person
 (their employee ID, or the email in phase 1) and the namespace, and forwards the
 virtual key's hash, Open WebUI's signed token (unverified) and its own service
-credential. A MemMachine platform verifies all of it. `MEMMACHINE_OWUI_USER_CLAIM`
+credential; stores also carry `X-MemMachine-Request-Started`, so the platform
+judges a token at the time the request began. A `403` with
+`X-MemMachine-Decision: not-enrolled` means memory is off for that person: no
+memory, the store is dropped. Open WebUI's signing secret belongs to the platform
+only: the hook refuses to start with it in platform mode. A MemMachine platform
+verifies all of it. `MEMMACHINE_OWUI_USER_CLAIM`
 picks the token claim that names an Open WebUI user (`name` with Corp SSO, where
 it is the employee ID). `mock_platform/` is a minimal platform for development,
 with a mock Keycloak for SSO; see [`mock_platform/README.md`](./mock_platform/README.md).
@@ -235,10 +248,8 @@ Load-bearing implementation details (reasoning-model fallback, `model_group_alia
 See [`TESTS.md`](./TESTS.md) for full env-var references and examples. Quick reference:
 
 ```bash
-# unit + live (requires MEMMACHINE_BASE_URL reachable)
-uv run pytest test_hook.py -v
-# unit only
-MEMMACHINE_LIVE=0 uv run pytest test_hook.py -v
+# unit (no MemMachine needed)
+uv run pytest test_hook.py -q
 
 # e2e store path (needs litellm proxy + virtual key + MemMachine up)
 LITELLM_MASTER_KEY=sk-... LITELLM_TEST_VIRTUAL_KEY=sk-... \
@@ -270,7 +281,7 @@ After restart, sanity-check in order:
      -d '{"model":"memmachine-llm-medium","messages":[{"role":"user","content":"What animal do I like?"}]}'
    ```
    The second response should mention cats.
-3. **Logs** — failures are emitted through the standard Python logger even when debug is off. Set `MEMMACHINE_DEBUG=1` temporarily for verbose hook traces such as `async_pre_call_hook`, `_in_scope`, `search ok`, and `store resolved`.
+3. **Logs** — failures are emitted through the standard Python logger even when debug is off. Set `MEMMACHINE_DEBUG=1` temporarily for verbose hook traces such as `search ok` and `store ok`; `MEMMACHINE_TRACE` (on by default) logs one line per memory step (turn, search, store) with LiteLLM's request id, ids only.
 
 ## References
 

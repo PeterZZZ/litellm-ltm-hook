@@ -77,11 +77,14 @@ sha1sum keycloak-26.7.5.tar.gz          # must match the line above
 tar xzf keycloak-26.7.5.tar.gz && rm keycloak-26.7.5.tar.gz
 ```
 
-The hook runs inside LiteLLM: link it next to LiteLLM's config so a `git pull`
-plus a restart picks up changes.
+The hook runs inside LiteLLM: link it and its adapters next to LiteLLM's config
+so a `git pull` plus a restart picks up changes. Undelivered stores go to
+`dead-letter.jsonl` next to the hook's real file (the repo; git ignores it), or
+to `MEMMACHINE_DEAD_LETTER`.
 
 ```bash
 ln -s $ENV_DIR/repo/memmachine_hook.py $ENV_DIR/litellm/memmachine_hook.py
+ln -s $ENV_DIR/repo/memmachine_adapters $ENV_DIR/litellm/memmachine_adapters
 cp $ENV_DIR/repo/deploy/litellm-config.yaml $ENV_DIR/litellm/config.yaml
 ```
 
@@ -223,8 +226,7 @@ ACCOUNTS_FILE=$ENV_DIR/accounts.txt OWUI_JWT_SECRET="$FORWARD_USER_INFO_HEADER_J
 Expect `17/17 passed`. Unit tests, no network:
 
 ```bash
-MEMMACHINE_LIVE=0 uv run --group platform pytest -q \
-  test_hook.py test_identity.py test_platform.py test_platform_mode.py test_portal.py test_sso.py
+uv run --group platform pytest -q test_hook.py test_platform.py test_portal.py test_sso.py
 ```
 
 To use it from a laptop, forward every port the browser touches; Keycloak's

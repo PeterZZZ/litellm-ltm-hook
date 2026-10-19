@@ -42,7 +42,7 @@ MODEL = os.environ.get("MEMMACHINE_TEST_MODEL", "memmachine-llm-medium")
 PROJ = os.environ.get("MEMMACHINE_TEST_PROJECT", "default")
 EXPECTED_USER = os.environ.get("MEMMACHINE_TEST_EXPECTED_USER", "")
 
-# Mirror of memmachine_hook._to_org_id: MemMachine org_id allows letters, digits,
+# Mirror of memmachine_hook.org_of: MemMachine org_id allows letters, digits,
 # _, -, :, Unicode only. Replace everything else with _.
 _ORG_ID_ALLOWED = re.compile(r"[^A-Za-z0-9_:\-]")
 
