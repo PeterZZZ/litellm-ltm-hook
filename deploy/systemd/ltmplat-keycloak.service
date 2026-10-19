@@ -1,0 +1,15 @@
+[Unit]
+Description=ltm-platform-env: Keycloak (Corp SSO mock), dev mode, 127.0.0.1:8180
+After=network.target
+
+[Service]
+User=ubuntu
+EnvironmentFile=/opt/ltm-platform-env/keycloak.env
+WorkingDirectory=/opt/ltm-platform-env/keycloak/keycloak-26.7.5
+# --hostname must be the URL browsers use; Open WebUI and the platform fetch the
+# same URL, so token issuers match. Keep 127.0.0.1 everywhere, not localhost.
+ExecStart=/opt/ltm-platform-env/keycloak/keycloak-26.7.5/bin/kc.sh start-dev --http-host=127.0.0.1 --http-port=8180 --hostname=http://127.0.0.1:8180 --health-enabled=true
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target

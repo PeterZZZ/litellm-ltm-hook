@@ -223,6 +223,8 @@ credential. A MemMachine platform verifies all of it. `MEMMACHINE_OWUI_USER_CLAI
 picks the token claim that names an Open WebUI user (`name` with Corp SSO, where
 it is the employee ID). `mock_platform/` is a minimal platform for development,
 with a mock Keycloak for SSO; see [`mock_platform/README.md`](./mock_platform/README.md).
+To build the whole test stack (Keycloak, LiteLLM, Open WebUI, platform) on a host,
+follow [`SETUP.md`](./SETUP.md).
 
 ## Design notes
 

@@ -1,0 +1,22 @@
+# LiteLLM config for the platform-mode test stack. The hook file must be next to
+# this config (symlink it from the repo): $ENV_DIR/litellm/memmachine_hook.py.
+model_list:
+  - model_name: glm-5.2
+    litellm_params:
+      model: deepinfra/zai-org/GLM-5.2
+      api_key: os.environ/DEEPINFRA_API_KEY
+
+router_settings:
+  # A memmachine- model name gets memory; the plain name does not (task model).
+  model_group_alias:
+    "memmachine-glm-5.2": "glm-5.2"
+
+litellm_settings:
+  callbacks:
+    - memmachine_hook.memmachine_handler
+  drop_params: true
+  request_timeout: 600
+
+general_settings:
+  master_key: os.environ/LITELLM_MASTER_KEY
+  database_url: os.environ/DATABASE_URL

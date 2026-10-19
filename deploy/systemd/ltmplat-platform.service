@@ -1,0 +1,17 @@
+[Unit]
+Description=ltm-platform-env: mock MemMachine platform (tenant control server) in front of core
+After=network-online.target ltmplat-keycloak.service
+
+[Service]
+Type=exec
+User=ubuntu
+EnvironmentFile=/opt/ltm-platform-env/platform.env
+Environment=PYTHONPATH=/opt/ltm-platform-env/repo
+WorkingDirectory=/opt/ltm-platform-env/platform
+ExecStart=/opt/ltm-platform-env/platform/.venv/bin/uvicorn mock_platform.app:app \
+  --host 127.0.0.1 --port ${PLATFORM_PORT}
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

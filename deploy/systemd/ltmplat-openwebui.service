@@ -1,0 +1,18 @@
+[Unit]
+Description=ltm-platform-env: stock Open WebUI, one shared app key, signed user tokens
+After=network-online.target ltmplat-litellm.service ltmplat-keycloak.service
+Wants=ltmplat-litellm.service
+
+[Service]
+Type=exec
+User=ubuntu
+EnvironmentFile=/opt/ltm-platform-env/openwebui.env
+EnvironmentFile=-/opt/ltm-platform-env/openwebui-connection.env
+WorkingDirectory=/opt/ltm-platform-env/data/openwebui
+ExecStart=/opt/ltm-platform-env/openwebui/.venv/bin/open-webui serve \
+  --host 127.0.0.1 --port ${OPENWEBUI_PORT}
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

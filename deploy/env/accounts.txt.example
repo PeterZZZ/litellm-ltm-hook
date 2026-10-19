@@ -1,0 +1,5 @@
+# email password: the Corp SSO (Keycloak) logins, created by tools/keycloak_setup.py
+admin@corp.example <password>
+alice@corp.example <password>
+bob@corp.example <password>
+carol@corp.example <password>

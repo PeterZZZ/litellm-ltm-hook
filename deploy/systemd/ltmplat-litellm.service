@@ -1,0 +1,19 @@
+[Unit]
+Description=ltm-platform-env: LiteLLM with the hook in platform mode, virtual keys in Postgres
+After=network-online.target postgresql.service ltmplat-platform.service
+Wants=ltmplat-platform.service
+
+[Service]
+Type=exec
+User=ubuntu
+EnvironmentFile=/opt/ltm-platform-env/litellm.env
+Environment=PATH=/opt/ltm-platform-env/litellm/.venv/bin:/usr/local/bin:/usr/bin:/bin
+WorkingDirectory=/opt/ltm-platform-env/litellm
+ExecStart=/opt/ltm-platform-env/litellm/.venv/bin/litellm \
+  --config /opt/ltm-platform-env/litellm/config.yaml \
+  --host 127.0.0.1 --port ${LITELLM_PORT}
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
