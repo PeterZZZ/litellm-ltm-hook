@@ -144,6 +144,7 @@ Per-request controls:
 - `x-memmachine-org: <org>` — select another org; defaults to the slugified user
 - `x-memmachine-project: <project>` — select another project; defaults to `MEMMACHINE_PROJECT_ID`
 - `x-memmachine-disable: 1` — skip the hook for this request
+- `x-memmachine-client: claude-code` or `openwebui` — the frontend naming itself: the hook uses that adapter (the turn model) and tells the platform that label. Optional (without it, or with another name, each adapter recognises its own requests); never identity
 
 The hook currently accepts org/project selectors directly for PoC use. A future Authz gateway must authorize the virtual-key-associated MemMachine credential against the requested namespace before forwarding to the raw MemMachine API; see `DEV.md`.
 

@@ -117,6 +117,7 @@ def find_prompt(messages) -> Optional[Prompt]:
 
 class ClaudeCodeAdapter(core.Adapter):
     call_types = core.ANTHROPIC_CALL_TYPES
+    frontend = "claude-code"
 
     @property
     def name(self) -> str:

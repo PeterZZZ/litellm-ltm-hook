@@ -221,6 +221,14 @@ curl -s http://127.0.0.1:8087/api/config | python3 -c 'import json,sys; d=json.l
 Sign in through "Corp SSO" as `admin@corp.example` first: Open WebUI's first
 user becomes its admin.
 
+Open WebUI names itself to the hook with a header on its LiteLLM connection,
+`x-memmachine-client: openwebui` (`OPENAI_API_CONFIGS` in
+`openwebui-connection.env`, which seeds a fresh install). On an install that
+already ran, add it in Admin Settings > Connections > the LiteLLM connection >
+Headers: `{"x-memmachine-client": "openwebui"}`. Without it the hook still
+recognises Open WebUI's requests, and labels them `other` when they carry no
+signed user token.
+
 ## 10. Claude Code
 
 Claude Code reaches LiteLLM with the person's own key (Alice's from step 7,
@@ -245,9 +253,11 @@ What matters in the block:
 - `ANTHROPIC_MODEL=memmachine-glm-5.2`: only `memmachine-` models get memory;
   `ANTHROPIC_DEFAULT_HAIKU_MODEL` is the plain model, for Claude Code's
   background requests.
-- `ANTHROPIC_CUSTOM_HEADERS: x-memmachine-project: default`: the project; a
-  repo can name its own in its `.claude/settings.json`, and the platform
-  decides whether the person may use it.
+- `ANTHROPIC_CUSTOM_HEADERS`: two headers, one per line.
+  `x-memmachine-project: default` is the project (a repo can name its own in
+  its `.claude/settings.json`; the platform decides whether the person may use
+  it). `x-memmachine-client: claude-code` names the frontend, so the hook uses
+  its Claude Code adapter and the platform's audit says `claude-code`.
 - `autoMemoryEnabled: false`: Claude Code's own memory files stay out of the
   way; `CLAUDE_CODE_MAX_CONTEXT_TOKENS` leaves room for the memory block.
 

@@ -108,7 +108,7 @@ settings_block() {  # settings_block KEY [PROJECT]
     "ANTHROPIC_AUTH_TOKEN": "$1",
     "ANTHROPIC_MODEL": "memmachine-${model}",
     "ANTHROPIC_DEFAULT_HAIKU_MODEL": "${model}",
-    "ANTHROPIC_CUSTOM_HEADERS": "x-memmachine-project: ${2:-default}",
+    "ANTHROPIC_CUSTOM_HEADERS": "x-memmachine-project: ${2:-default}\nx-memmachine-client: claude-code",
     "CLAUDE_CODE_GATEWAY_HINT_HEADERS": "1",
     "CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY": "1",
     "CLAUDE_CODE_MAX_CONTEXT_TOKENS": "${window}"

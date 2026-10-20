@@ -1252,6 +1252,43 @@ class TestFrontends:
         self.chat(hook, headers, user="alice", call_type=call_type, data=data)
         assert seen == []
 
+    def test_open_webui_naming_itself_is_labelled_so_without_a_token(self, hook):
+        seen, handle = self.recorder()
+        hook.transport = httpx.MockTransport(handle)
+        self.chat(hook, {"x-memmachine-client": "openwebui"}, user="alice")
+        assert [s[1]["x-memmachine-client"] for s in seen] == ["openwebui", "openwebui"]
+
+    def test_the_named_adapter_wins_over_recognition(self, hook):
+        # Claude Code's user agent alone would pick its adapter; the name decides.
+        seen, handle = self.recorder()
+        hook.transport = httpx.MockTransport(handle)
+        self.chat(hook, {"x-memmachine-client": "OpenWebUI", "user-agent": "claude-cli/2.1.304 (external, cli)"},
+                  user="alice", call_type="anthropic_messages")
+        assert [(s[0], s[1]["x-memmachine-client"]) for s in seen] == \
+            [("/api/v2/memories/search", "openwebui"), ("/api/v2/memories", "openwebui")]
+
+    def test_claude_code_named_without_its_hint_headers_gets_no_memory(self, hook):
+        # Named Claude Code, the request goes to its adapter, which needs the hint
+        # headers: no memory, and not handed to the Open WebUI adapter instead.
+        seen, handle = self.recorder()
+        hook.transport = httpx.MockTransport(handle)
+        self.chat(hook, {"x-memmachine-client": "claude-code"}, user="alice", call_type="anthropic_messages")
+        assert seen == []
+
+    def test_an_unknown_name_falls_back_and_is_logged_once(self, hook, caplog):
+        seen, handle = self.recorder()
+        hook.transport = httpx.MockTransport(handle)
+        for _ in range(2):
+            self.chat(hook, {"x-memmachine-client": "cursor"}, user="alice")
+        assert [s[1]["x-memmachine-client"] for s in seen] == ["other"] * 4
+        assert sum("category=unknown_frontend" in r.message for r in caplog.records) == 1
+
+    def test_a_known_name_on_a_route_its_adapter_does_not_serve_falls_back_quietly(self, hook, caplog):
+        seen, handle = self.recorder()
+        hook.transport = httpx.MockTransport(handle)
+        self.chat(hook, {"x-memmachine-client": "claude-code"}, user="alice", call_type="acompletion")
+        assert len(seen) == 2 and not any("unknown_frontend" in r.message for r in caplog.records)
+
     def test_claude_code_sends_its_client_and_any_user_header_for_platform_to_judge(self, hook):
         seen, handle = self.recorder()
         hook.transport = httpx.MockTransport(handle)
@@ -1349,6 +1386,11 @@ class TestDirectMode(TestFrontends):
     test_a_404_search_is_an_empty_namespace_not_an_outage = None
     test_a_failed_store_is_retried_then_kept_and_replays_in_its_format = None
     test_requests_that_get_no_memory = None
+    test_open_webui_naming_itself_is_labelled_so_without_a_token = None
+    test_the_named_adapter_wins_over_recognition = None
+    test_claude_code_named_without_its_hint_headers_gets_no_memory = None
+    test_an_unknown_name_falls_back_and_is_logged_once = None
+    test_a_known_name_on_a_route_its_adapter_does_not_serve_falls_back_quietly = None
 
 
 def test_direct_mode_keeps_the_secret_and_platform_mode_refuses_it(tmp_path):

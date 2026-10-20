@@ -18,6 +18,10 @@ Direct mode: MEMMACHINE_BASE_URL is MemMachine itself and the hook decides (the
 key owner's email, or Open WebUI's signed token checked here). In short:
   - Only `memmachine-` models get memory (MEMMACHINE_MODELS narrows them);
     `x-memmachine-disable: 1` turns memory off for a request.
+  - Which adapter: the one the frontend names in `x-memmachine-client`
+    (`claude-code`, `openwebui`), else the first that recognises the request
+    (Claude Code by its own headers; Open WebUI takes the rest). The name picks
+    the turn model and the label Platform sees, never who the person is.
   - Claude Code (memmachine_adapters/claude_code.py): one turn is one
     `x-claude-code-prompt-id`; only `x-claude-code-request-class: main` requests;
     the search runs on the turn's first request and every request of the turn
@@ -360,6 +364,11 @@ ANTHROPIC_CALL_TYPES = ("anthropic_messages", "aanthropic_messages")
 # "1" = no memory for this request: no search, no store, no turn state. Claude Code
 # can only send it for a whole session (ANTHROPIC_CUSTOM_HEADERS).
 H_DISABLE = "x-memmachine-disable"
+# The frontend naming itself (`claude-code`, `openwebui`): picks the adapter, so the
+# turn model, and the label Platform sees. Optional: without it, or with a name no
+# adapter answers to, each adapter recognises its own requests. Never identity:
+# who the person is comes from the key and the signed token only.
+H_FRONTEND = "x-memmachine-client"
 
 # A person's ID: an employee ID, a plain user name or an email, case kept.
 _PERSON = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._%+@-]{0,253}$")
@@ -1028,6 +1037,7 @@ class Adapter:
     """How one frontend's traffic becomes turns (memmachine_adapters/__init__.py)."""
     name = ""
     call_types: tuple = ()
+    frontend = ""        # the value of `x-memmachine-client` that names this adapter
 
     def claims(self, call_type, headers) -> bool:
         return False
@@ -1059,6 +1069,7 @@ class MemMachineHook(CustomLogger):
         self._breaker_until = 0.0
         self._warned_users: set = set()
         self._warned_keys: set = set()
+        self._warned_frontends: set = set()  # unknown x-memmachine-client values logged
         self._refused: set = set()          # (key, project, status) refusals logged
         self._recover_pending()
 
@@ -1073,6 +1084,18 @@ class MemMachineHook(CustomLogger):
         return data
 
     def _adapter(self, call_type, headers) -> Optional[Adapter]:
+        """The adapter the frontend names (`x-memmachine-client`), else the first that
+        recognises the request. A name no adapter answers to is logged once and
+        ignored."""
+        named = _header(headers, H_FRONTEND).lower()
+        if named:
+            for adapter in self.adapters:
+                if adapter.frontend == named and call_type in adapter.call_types:
+                    return adapter
+            if named not in self._warned_frontends and all(a.frontend != named for a in self.adapters):
+                self._warned_frontends.add(named)
+                _log_error("pre_call", "unknown_frontend", frontend=named[:40],
+                           hint="x-memmachine-client names no adapter; recognising the request instead")
         for adapter in self.adapters:
             if adapter.claims(call_type, headers):
                 return adapter

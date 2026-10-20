@@ -22,7 +22,10 @@ mode), the Platform client, a refusal never failing the request, store retries
 and dead letters, tracing.
 
 This adapter is last in memmachine_hook.default_adapters() and claims every
-request of its call types the adapters before it did not.
+request of its call types the adapters before it did not; a request naming it
+(`x-memmachine-client: openwebui`, an Open WebUI connection header) is always
+its own. Its label to Platform is `openwebui` for a request that names it or
+carries Open WebUI's signed token, `other` for the rest.
 """
 
 import memmachine_hook as core
@@ -103,6 +106,7 @@ def chat_answer(response_obj) -> str:
 class OpenWebUIAdapter(core.Adapter):
     name = "openwebui"
     call_types = CALL_TYPES
+    frontend = "openwebui"
 
     def claims(self, call_type, headers) -> bool:
         return call_type in self.call_types
@@ -136,7 +140,9 @@ class OpenWebUIAdapter(core.Adapter):
         metadata = data.get("metadata") if isinstance(data.get("metadata"), dict) else {}
         session_id = (core._header(headers, "x-memmachine-session") or metadata.get("session_id")
                       or (ident.person if token else ident.key_id) or "default")
-        turn = hook.new_turn(ident, "openwebui" if token else "other", str(session_id), call_id, text,
+        # The label Platform sees: Open WebUI when it says so or signs its user.
+        named = core._header(headers, core.H_FRONTEND).lower() == self.frontend
+        turn = hook.new_turn(ident, "openwebui" if token or named else "other", str(session_id), call_id, text,
                              project, hook.clock(), prompt_ids={call_id}, typed=text,
                              style="openwebui", build=build_block)
         turn.in_flight = 1
