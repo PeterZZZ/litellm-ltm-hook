@@ -517,5 +517,10 @@ class TestOtherEndpoints:
         last = world.reg.audit(1)[0]
         assert last["op"] == "DELETE /api/v2/memories" and last["decision"] == "endpoint-not-allowed"
 
+    def test_browser_requests_are_refused_but_not_recorded(self, world):
+        r = world.client.get("/favicon.ico")
+        assert r.status_code == 403
+        assert all(a["op"] != "GET /favicon.ico" for a in world.reg.audit(5))
+
     def test_health_stays_open(self, world):
         assert world.client.get("/healthz").status_code == 200

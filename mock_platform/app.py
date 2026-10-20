@@ -208,8 +208,11 @@ def create_app(
         op = f"{request.method} /{path}"[:80]
         request_id = (request.headers.get(REQUEST_ID_HEADER) or "")[:80]
         log.info("op=%r decision=%s status=403 request=%s", op, ENDPOINT_NOT_ALLOWED, request_id)
-        registry.record(op=op, decision=ENDPOINT_NOT_ALLOWED, status=403,
-                        reason="endpoint not served by the platform")
+        if request.headers.get("authorization"):
+            # An API client's attempt is worth a line in the audit; a browser
+            # asking for a favicon is not.
+            registry.record(op=op, decision=ENDPOINT_NOT_ALLOWED, status=403,
+                            reason="endpoint not served by the platform")
         return JSONResponse({"detail": "endpoint not served by the platform"}, status_code=403,
                             headers={DECISION_HEADER: ENDPOINT_NOT_ALLOWED})
 
