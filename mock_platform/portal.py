@@ -49,7 +49,7 @@ from .registry import Registry, User
 COOKIE = "mm_portal"
 # Bumped whenever the page and these routes change together. A tab still running
 # an older page sees a different value and reloads itself instead of breaking.
-UI_VERSION = "2026-10-20.2"
+UI_VERSION = "2026-10-20.3"
 SESSION_SECONDS = 8 * 60 * 60
 LOGIN_SECONDS = 10 * 60  # how long a sign-in may sit at Keycloak
 STATE_COOKIE = "mm_portal_login"

@@ -15,9 +15,12 @@ expired or a team key names no one person and is not linked.
 
 Reconcile runs every few minutes and on an admin's request: it re-reads every
 key LiteLLM holds and drops linked keys that are gone, blocked, expired or
-whose owner changed, and links new keys of known people. A key unlinked
-because its owner changed stays refused (`key-reassigned`) until an admin
-syncs the new owner's account: a reassignment is an admin's to accept.
+whose owner changed, and links new keys of known people. A personal key
+unlinked because its owner changed stays refused (`key-reassigned`) until an
+admin syncs the new owner's account: a reassignment is an admin's to accept.
+An app key is shared by everyone behind that app, so it is suspended rather
+than dropped: its registration stays, it is refused while LiteLLM names anyone
+but its service user, and it serves again as soon as that is put right.
 
 What is deliberately not here: creating a person the first time an unknown
 owner turns up (Crystal's "default space for everyone"). That is Leo's
@@ -163,12 +166,25 @@ class KeyLinker:
             for key in self.registry.keys():
                 info = live.get(key.key_hash)
                 why = self._why_unlink(key, info)
-                if why:
+                if why and key.kind == "app" and info is not None:
+                    # Shared by everyone behind the app: suspend, do not forget.
+                    if not self.registry.revoked(key.key_hash):
+                        self.registry.suspend_key(key.key_hash, why)
+                        unlinked.append(f"{key.label} (suspended: {why})")
+                        self.registry.record(op="reconcile", decision=KEY_REASSIGNED, status=403,
+                                             key_label=key.label, reason=f"suspended: {why}")
+                elif why:
                     self.registry.unlink_key(key.key_hash, reason=why)
                     unlinked.append(f"{key.label} ({why})")
                     self.registry.record(op="reconcile", decision=KEY_REASSIGNED if "owner" in why
                                          else NOT_ENROLLED, status=403, key_label=key.label,
                                          email=self._email_of(key), reason=f"unlinked: {why}")
+                elif key.kind == "app" and self.registry.revoked(key.key_hash):
+                    self.registry.forget_revoked(key.key_hash)
+                    linked.append(f"{key.label} (suspension lifted)")
+                    self.registry.record(op="reconcile", decision="allow", status=200,
+                                         key_label=key.label,
+                                         reason="suspension lifted: LiteLLM names its service user again")
             for h in self.registry.revoked_keys():
                 if h not in live:
                     self.registry.forget_revoked(h)

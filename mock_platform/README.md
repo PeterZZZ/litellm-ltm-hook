@@ -147,10 +147,13 @@ key does not hit LiteLLM on every request.
 
 **Reconcile** runs every `MOCK_PLATFORM_RECONCILE_SECONDS` (default 600) and
 from the Admin tab's button: it re-reads `/key/list`, drops linked keys that
-are deleted, blocked, expired or whose owner changed (app keys included), and
-links new keys of known people. A key unlinked because LiteLLM reassigned it is
-refused with `key-reassigned` rather than linked to whoever LiteLLM now names,
-until an admin syncs that person's account.
+are deleted, blocked, expired or whose owner changed, and links new keys of
+known people. A personal key unlinked because LiteLLM reassigned it is refused
+with `key-reassigned` rather than linked to whoever LiteLLM now names, until an
+admin syncs that person's account. An app key, shared by everyone behind the
+app, is **suspended** instead: its registration stays, it is refused while
+LiteLLM names anyone but its service user, and the next reconcile lifts the
+suspension once that is put right.
 
 Keys and secrets are read from environment variables, never from arguments.
 A key may be given raw or as LiteLLM's SHA-256. `--owner` is the LiteLLM user

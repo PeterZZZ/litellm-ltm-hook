@@ -271,13 +271,40 @@ class TestReconcile:
         assert world.reg.key(h("sk-service")) is None    # service user
         assert world.reg.key(h("sk-team")) is None
 
-    def test_app_key_reassigned_in_litellm_is_unlinked(self, world):
+    def test_app_key_reassigned_in_litellm_is_suspended_not_forgotten(self, world):
         world.litellm[h(APP_KEY)]["user_id"] = "E67890"
         result = self.run(world)
-        assert world.reg.key(h(APP_KEY)) is None and world.reg.app(h(APP_KEY)) is None
-        assert any(u.startswith("open-webui-app (owner changed") for u in result["unlinked"])
+        # The registration (secret, issuer, owner) stays; the key is refused.
+        assert world.reg.app(h(APP_KEY)).owner == APP_OWNER
+        assert result["unlinked"] == ["open-webui-app (suspended: owner changed to 'E67890' in LiteLLM)"]
+        assert world.reg.app_keys()[0]["suspended"].startswith("owner changed")
         r = search(world, APP_KEY, "E67890", org="E67890")
         assert r.status_code == 403 and decision(r) == "key-reassigned"
+        assert self.run(world)["unlinked"] == []  # said once, not every run
+
+    def test_app_key_serves_again_once_litellm_is_put_right(self, world):
+        world.litellm[h(APP_KEY)]["user_id"] = "E67890"
+        self.run(world)
+        world.litellm[h(APP_KEY)]["user_id"] = APP_OWNER
+        # Even before reconcile the per-call check passes nothing: still suspended.
+        assert decision(search(world, APP_KEY, APP_OWNER)) == "key-reassigned"
+        result = self.run(world)
+        assert result["linked"] == ["open-webui-app (suspension lifted)"]
+        assert world.reg.app_keys()[0]["suspended"] is None
+        # Served again: a token is still required, so the right owner alone is 401, not 403.
+        assert search(world, APP_KEY, APP_OWNER).status_code == 401
+
+    def test_app_key_deleted_in_litellm_is_forgotten(self, world):
+        del world.litellm[h(APP_KEY)]
+        self.run(world)
+        assert world.reg.key(h(APP_KEY)) is None and world.reg.app(h(APP_KEY)) is None
+
+    def test_re_registering_an_app_key_lifts_its_suspension(self, world):
+        world.litellm[h(APP_KEY)]["user_id"] = "E67890"
+        self.run(world)
+        world.reg.unlink_key(APP_KEY)
+        world.reg.add_app_key(APP_KEY, "open-webui-app", "s" * 40, "open-webui", owner=APP_OWNER)
+        assert world.reg.revoked(h(APP_KEY)) is None
 
     def test_app_key_still_its_service_users_is_kept(self, world):
         self.run(world)

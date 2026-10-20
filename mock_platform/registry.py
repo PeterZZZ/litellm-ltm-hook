@@ -20,9 +20,12 @@ SQLite, seven tables, nothing a real tenant control server would not also need:
               its owner and can be switched off by them. An *app* key (Open
               WebUI's shared key) names nobody, so a request on it must carry a
               signed user token instead.
-    revoked   keys reconcile unlinked because LiteLLM reassigned them: refused
-              (`key-reassigned`) rather than linked again to whoever LiteLLM
-              now names, until an admin syncs that person's account.
+    revoked   keys reconcile found reassigned in LiteLLM: refused
+              (`key-reassigned`) rather than served as whoever LiteLLM now
+              names. A personal key is dropped and stays refused until an
+              admin syncs the new owner's account; an app key keeps its
+              registration (secret, issuer, owner) and is suspended until
+              LiteLLM's owner is its service user again.
     apps      for each app key, how to verify the tokens that may ride on it,
               and which LiteLLM service user owns the key: LiteLLM's owner must
               still be that user on every call, as it must for personal keys.
@@ -222,9 +225,15 @@ class Registry:
         return [r["key_hash"] for r in self._db.execute("SELECT key_hash FROM revoked")]
 
     def forget_revoked(self, key_hash_value: str) -> None:
-        """The key is gone from LiteLLM: nothing left to refuse."""
+        """The key is gone from LiteLLM, or an app key is its service user's again."""
         with self._db:
             self._db.execute("DELETE FROM revoked WHERE key_hash = ?", (key_hash_value,))
+
+    def suspend_key(self, key_hash_value: str, reason: str) -> None:
+        """Keep the key's registration but refuse it (`key-reassigned`) until lifted."""
+        with self._db:
+            self._db.execute("INSERT OR REPLACE INTO revoked (key_hash, reason, at) VALUES (?, ?, ?)",
+                             (key_hash_value, reason, time.time()))
 
     def keys(self) -> list[Key]:
         return [_key(r) for r in self._db.execute("SELECT * FROM keys ORDER BY label")]
@@ -276,8 +285,9 @@ class Registry:
 
     def app_keys(self) -> list[dict]:
         return [dict(r) for r in self._db.execute(
-            "SELECT k.label, a.issuer, a.owner, substr(k.key_hash, 1, 12) AS key_hash "
-            "FROM keys k JOIN apps a ON a.key_hash = k.key_hash ORDER BY k.label")]
+            "SELECT k.label, a.issuer, a.owner, substr(k.key_hash, 1, 12) AS key_hash, "
+            "r.reason AS suspended FROM keys k JOIN apps a ON a.key_hash = k.key_hash "
+            "LEFT JOIN revoked r ON r.key_hash = k.key_hash ORDER BY k.label")]
 
     def app_owners(self) -> set[str]:
         """LiteLLM users that own app keys: service users, never a person."""
@@ -433,6 +443,7 @@ class Registry:
                 "INSERT INTO apps (key_hash, jwt_secret, issuer, owner) VALUES (?, ?, ?, ?)",
                 (h, jwt_secret, issuer, (owner or "").strip() or None),
             )
+            self._db.execute("DELETE FROM revoked WHERE key_hash = ?", (h,))
         return self.key(h)
 
     def set_app_owner(self, raw_or_hash: str, owner: Optional[str]) -> App:
