@@ -222,19 +222,25 @@ user becomes its admin.
 
 ```bash
 cd $ENV_DIR/repo
-set -a; . $ENV_DIR/openwebui.env; set +a
+set -a; . $ENV_DIR/openwebui.env; . $ENV_DIR/litellm.env; set +a
 LITELLM_URL=http://127.0.0.1:4011 OWUI_URL=http://127.0.0.1:8087 PLATFORM_URL=http://127.0.0.1:8100 \
 PLATFORM_DB=$ENV_DIR/platform/registry.sqlite KEYS_FILE=$ENV_DIR/keys.env \
 ACCOUNTS_FILE=$ENV_DIR/accounts.txt OWUI_JWT_SECRET="$FORWARD_USER_INFO_HEADER_JWT_SECRET" \
+PLATFORM_SERVICE_CREDENTIAL="$MEMMACHINE_API_KEY" LITELLM_MASTER_KEY="$LITELLM_MASTER_KEY" \
   uv run --group platform python3 tools/platform_e2e.py
 ```
 
-Expect `17/17 passed`. Unit tests, no network:
+Expect `41/41 passed` (identity, the Platform API itself, grants, key linking
+and reconcile; the script makes and removes a few throwaway LiteLLM keys with
+the master key). Unit tests, no network:
 
 ```bash
 MEMMACHINE_LIVE=0 uv run --group platform pytest -q \
-  test_hook.py test_identity.py test_platform.py test_platform_mode.py test_portal.py test_sso.py
+  test_hook.py test_identity.py test_platform.py test_platform_mode.py test_portal.py test_sso.py test_linking.py
 ```
+
+Last tested at commit `e599e23` (row 3: automatic key linking with reconcile)
+on branch `feat/mock-platform`; the shared VM should run that or later.
 
 To use it from a laptop, forward every port the browser touches; Keycloak's
 must be included, because sign-in redirects the browser there. Use
