@@ -1,0 +1,19 @@
+[Unit]
+Description=ltm-platform-env: MemMachine core (v2 REST API) behind the mock platform
+After=network-online.target postgresql.service ltmplat-qdrant.service ltmplat-litellm.service
+Requires=postgresql.service ltmplat-qdrant.service
+# Embedder and LLM come from this stack's LiteLLM; core starts without it and
+# fails individual calls until it is up.
+Wants=ltmplat-litellm.service
+
+[Service]
+Type=exec
+User=ubuntu
+EnvironmentFile=/opt/ltm-platform-env/memmachine.env
+WorkingDirectory=/opt/ltm-platform-env/memmachine
+ExecStart=/opt/ltm-platform-env/memmachine/src/.venv/bin/memmachine-server
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

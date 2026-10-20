@@ -1,0 +1,16 @@
+[Unit]
+Description=ltm-platform-env: Qdrant vector store for MemMachine core
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=exec
+User=ubuntu
+EnvironmentFile=/opt/ltm-platform-env/memmachine.env
+WorkingDirectory=/opt/ltm-platform-env/data/qdrant
+ExecStart=/opt/ltm-platform-env/bin/qdrant
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

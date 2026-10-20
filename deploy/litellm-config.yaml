@@ -5,6 +5,13 @@ model_list:
     litellm_params:
       model: deepinfra/zai-org/GLM-5.2
       api_key: os.environ/DEEPINFRA_API_KEY
+  # MemMachine core's embedder, reached through this same gateway. GLM has no
+  # embedding model, so this one is OpenAI's; changing it invalidates every
+  # vector core has stored.
+  - model_name: text-embedding-3-small
+    litellm_params:
+      model: openai/text-embedding-3-small
+      api_key: os.environ/OPENAI_API_KEY
 
 router_settings:
   # A memmachine- model name gets memory; the plain name does not (task model).
