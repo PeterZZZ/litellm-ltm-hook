@@ -285,7 +285,7 @@ dialog::backdrop{background:rgba(10,10,20,.45)}
           <thead><tr><th>Namespace</th><th>Type</th><th>Memory</th><th>Stored</th><th style="text-align:right">Data</th></tr></thead>
           <tbody id="ns-rows"></tbody>
         </table></div>
-        <div class="note">One personal namespace per person for now. More arrive with per-project grants: the hook names the project, the platform checks the grant.</div>
+        <div class="note" id="grants-note"></div>
       </div>
 
       <div class="card sec">
@@ -345,8 +345,9 @@ dialog::backdrop{background:rgba(10,10,20,.45)}
     <!-- ADMIN -->
     <section id="t-admin" class="hidden">
       <div class="card sec">
-        <div class="sec-h"><h3>Accounts</h3><span class="muted" style="font-size:13px" id="acct-count"></span></div>
-        <p class="sub">Create an account by email. The platform then looks up that person's personal keys in LiteLLM itself, with its own read-only key, so a key can never be attached to the wrong owner.</p>
+        <div class="sec-h"><h3>Accounts</h3><span class="muted" style="font-size:13px" id="acct-count"></span>
+          <button class="btn sm" id="reconcile-btn" style="margin-left:auto" title="Re-read every key in LiteLLM now: drop keys that are gone, blocked or reassigned, link new keys of known people. Runs on its own every 10 minutes.">Reconcile keys with LiteLLM</button></div>
+        <p class="sub">Create an account by email. The platform looks up that person's keys in LiteLLM itself, with its own read-only key, so a key can never be attached to the wrong owner; a new personal key of a known person is linked the first time it is used.</p>
         <form class="create" id="create-form">
           <div><label class="f" for="new-email">Email</label><input class="t" id="new-email" type="email" placeholder="dana@corp.example" required></div>
           <div><label class="f" for="new-role">Role</label><select class="t" id="new-role"><option value="user">User</option><option value="admin">Admin</option></select></div>
@@ -479,10 +480,13 @@ const swBtn = (on, onclick, label) => h("button", { class: "sw" + (on ? " on" : 
 function result(d) {
   if (d.decision === "allow") return h("span", { class: "pill ok" }, "allowed");
   if (d.decision === "not-enrolled") return h("span", { class: "pill off" }, "no memory");
-  return h("span", { class: "pill bad" }, `refused ${d.status || ""}`.trim());
+  // refused, project-not-granted, key-reassigned, endpoint-not-allowed: the step that failed
+  const name = d.decision === "refused" ? "refused" : `refused · ${d.decision}`;
+  return h("span", { class: "pill bad", title: `X-MemMachine-Decision: ${d.decision}` }, `${name} ${d.status || ""}`.trim());
 }
+const refusedOp = d => d.decision !== "allow" && d.decision !== "not-enrolled" && !(d.op || "").startsWith("admin:");
 function action(op) {
-  return { search: "recall", store: "save" }[op] || (op || "").replace("admin:", "admin · ");
+  return { search: "recall", store: "save", list: "list", link: "link key", reconcile: "reconcile" }[op] || (op || "").replace("admin:", "admin · ");
 }
 function wayIn(d) {
   if (d.via === "app-token") return "Open WebUI";
@@ -499,7 +503,7 @@ function show(view) {
   $("#who").classList.toggle("hidden", view === "login" || view === "loading");
 }
 
-const UI_VERSION = "2026-10-16.1";
+const UI_VERSION = "2026-10-20.2";
 async function showLogin() {
   let cfg = { sso: false, password: true };
   try { cfg = await (await fetch("/portal/api/config")).json(); } catch {}
@@ -554,6 +558,10 @@ function renderAccess() {
         h("a", { class: "btn sm", href: "/portal/api/export", download: true }, "Export"),
         h("button", { class: "btn sm danger", onclick: () => openClear(ns.episodes) }, "Delete all")))));
   }
+  const g = m.grants || [];
+  $("#grants-note").replaceChildren(
+    "Projects you may use in your org: ", ...(g.includes("*") ? [h("code", {}, "any")] : g.flatMap((p, i) => [i ? ", " : "", h("code", {}, p)])),
+    ". A client names the project; the platform checks the grant. Memories above are the default project's.");
   const ways = $("#ways"); ways.replaceChildren();
   if (!m.access.length) ways.append(h("p", { class: "muted" }, "Nothing can reach your memory yet."));
   for (const a of m.access) {
@@ -611,7 +619,8 @@ async function loadUsers() {
       for (const k of u.keys) ways.push(h("span", { class: k.enabled ? "pill neutral" : "pill off", title: `hash ${k.hash}…` }, k.label + (k.enabled ? "" : " · off")));
       rows.append(h("tr", {},
         h("td", {}, h("b", {}, u.email), self ? h("span", { class: "muted" }, "  (you)") : null,
-          h("div", {}, h("span", { class: "muted" }, u.employee_id ? `${u.employee_id} · ` : "no employee ID · "), h("code", { class: "muted" }, u.namespace))),
+          h("div", {}, h("span", { class: "muted" }, u.employee_id ? `${u.employee_id} · ` : "no employee ID · "), h("code", { class: "muted" }, u.org_id || u.namespace)),
+          h("div", { class: "muted", style: "font-size:12.5px" }, "projects: ", (u.grants || []).includes("*") ? "any" : (u.grants || []).join(", ") || "none")),
         h("td", {}, h("span", { class: "role" + (u.role === "admin" ? " admin" : "") }, u.role)),
         h("td", {}, swBtn(u.enabled, () => adminUpdate(u.email, { enabled: !u.enabled }), `Memory for ${u.email}`)),
         h("td", {}, h("div", { style: "display:flex;gap:6px;flex-wrap:wrap" }, ways)),
@@ -636,6 +645,14 @@ async function adminSync(email) {
     loadUsers(); loadAudit();
   } catch (e) { toast(e.message); }
 }
+$("#reconcile-btn").addEventListener("click", async () => {
+  const b = $("#reconcile-btn"); b.disabled = true;
+  try {
+    const r = await api("/portal/api/admin/reconcile", { body: {} });
+    toast(`Checked ${r.checked} keys in LiteLLM; linked ${r.linked.length ? r.linked.join(", ") : "nothing new"}${r.unlinked.length ? "; unlinked " + r.unlinked.join(", ") : ""}`);
+    loadUsers(); loadAudit();
+  } catch (e) { toast(e.message); } finally { b.disabled = false; }
+});
 $("#create-form").addEventListener("submit", async e => {
   e.preventDefault();
   const email = $("#new-email").value.trim(), role = $("#new-role").value;
@@ -669,13 +686,13 @@ async function loadTrust() {
       h("div", { class: "tbox" }, h("h4", {}, "LiteLLM deployments"),
         ...(t.services.length ? t.services.map(s => h("div", {}, s, h("small", {}, "service credential, stored as a hash"))) : [h("div", { class: "muted" }, "none")])),
       h("div", { class: "tbox" }, h("h4", {}, "Apps with signed tokens"),
-        ...(t.apps.length ? t.apps.map(a => h("div", {}, a.label, h("small", {}, `issuer ${a.issuer} · key ${a.key_hash}…`))) : [h("div", { class: "muted" }, "none")])),
+        ...(t.apps.length ? t.apps.map(a => h("div", {}, a.label, h("small", {}, `issuer ${a.issuer} · key ${a.key_hash}… · LiteLLM owner ${a.owner || "none"} (checked on every call)`))) : [h("div", { class: "muted" }, "none")])),
       h("div", { class: "tbox" }, h("h4", {}, "Corp SSO"),
         h("div", {}, h("span", { class: t.sso ? "pill ok" : "pill off" }, t.sso ? "connected" : "not configured")),
         h("small", {}, t.sso ? `${t.sso.issuer} · client ${t.sso.client} · ${t.sso.directory}` : "portal sign-in falls back to Open WebUI passwords")),
       h("div", { class: "tbox" }, h("h4", {}, "Key lookup in LiteLLM"),
         h("div", {}, h("span", { class: t.litellm.configured ? "pill ok" : "pill off" }, t.litellm.configured ? "connected" : "not configured")),
-        h("small", {}, t.litellm.configured ? `${t.litellm.role} · ${t.litellm.url}` : "accounts get no keys automatically")));
+        h("small", {}, t.litellm.configured ? `${t.litellm.role} · ${t.litellm.url} · ${t.litellm.linking}` : "accounts get no keys automatically")));
   } catch (e) { box.replaceChildren(h("div", {}, e.message)); }
 }
 const ACHIPS = [["all", "All"], ["allow", "Allowed"], ["not-enrolled", "No memory"], ["refused", "Refused"], ["admin", "Admin actions"]];
@@ -684,10 +701,11 @@ async function loadAudit() {
   catch (e) { $("#audit-rows").replaceChildren(h("tr", {}, h("td", { colspan: 6 }, e.message))); }
 }
 function renderAudit() {
-  const match = d => S.achip === "all" ? true : S.achip === "admin" ? (d.op || "").startsWith("admin:") : d.decision === S.achip && !(d.op || "").startsWith("admin:");
+  const chipFn = id => id === "all" ? () => true : id === "admin" ? d => (d.op || "").startsWith("admin:") : id === "refused" ? refusedOp : d => d.decision === id && !(d.op || "").startsWith("admin:");
+  const match = chipFn(S.achip);
   const chips = $("#audit-chips"); chips.replaceChildren();
   for (const [id, label] of ACHIPS) {
-    const fn = id === "all" ? () => true : id === "admin" ? d => (d.op || "").startsWith("admin:") : d => d.decision === id && !(d.op || "").startsWith("admin:");
+    const fn = chipFn(id);
     chips.append(h("button", { class: "chip" + (S.achip === id ? " on" : ""), onclick: () => { S.achip = id; renderAudit(); } }, label, h("span", { class: "n" }, S.audit.filter(fn).length)));
   }
   const q = $("#audit-q").value.trim().toLowerCase();

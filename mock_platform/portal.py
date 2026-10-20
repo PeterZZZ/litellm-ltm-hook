@@ -49,7 +49,7 @@ from .registry import Registry, User
 COOKIE = "mm_portal"
 # Bumped whenever the page and these routes change together. A tab still running
 # an older page sees a different value and reloads itself instead of breaking.
-UI_VERSION = "2026-10-16.1"
+UI_VERSION = "2026-10-20.2"
 SESSION_SECONDS = 8 * 60 * 60
 LOGIN_SECONDS = 10 * 60  # how long a sign-in may sit at Keycloak
 STATE_COOKIE = "mm_portal_login"
@@ -78,6 +78,7 @@ def mount_portal(
     litellm_url: Optional[str] = None,
     litellm_key: Optional[str] = None,
     sso=None,
+    linker=None,
 ) -> None:
     owui_url = (owui_url or "").rstrip("/") or None
     litellm_url = (litellm_url or "").rstrip("/") or None
@@ -257,6 +258,7 @@ def mount_portal(
             "email": user.email, "employee_id": user.employee_id, "role": user.role,
             "enabled": user.enabled,
             "allow_app": user.allow_app, "namespace": f"{user.org_id}/{user.project_id}",
+            "org_id": user.org_id, "grants": list(user.grants),
             "keys": [{"label": k.label, "enabled": k.enabled, "hash": k.key_hash[:12]} for k in keys],
             "created_at": user.created_at, "last_seen": seen.get(user.email.lower()),
         }
@@ -389,6 +391,7 @@ def mount_portal(
                 "kind": "Personal", "enabled": user.enabled,
                 "episodes": await episode_count(user),
             }],
+            "grants": list(user.grants),
             "access": access_paths(user),
         }
 
@@ -573,6 +576,21 @@ def mount_portal(
                         namespace=f"{target.org_id}/{target.project_id}")
         return {**synced, "employee_id": employee}
 
+    @app.post("/portal/api/admin/reconcile")
+    async def admin_reconcile(request: Request):
+        """What the background job does every few minutes, now."""
+        actor = admin(request, write=True)
+        if linker is None or not linker.configured:
+            raise HTTPException(409, "LiteLLM lookup is not configured")
+        try:
+            result = await linker.reconcile()
+        except (httpx.HTTPError, RuntimeError) as exc:
+            raise HTTPException(502, f"LiteLLM not reachable: {exc}") from None
+        registry.record(op="admin:reconcile", decision="allow", status=200, email=actor.email,
+                        reason=f"by {actor.email}; checked {result['checked']}; linked "
+                               f"{result['linked'] or 'none'}; unlinked {result['unlinked'] or 'none'}")
+        return result
+
     @app.post("/portal/api/admin/users/delete")
     async def admin_delete(request: Request):
         actor = admin(request, write=True)
@@ -597,7 +615,9 @@ def mount_portal(
             "services": registry.services(),
             "apps": registry.app_keys(),
             "litellm": {"url": litellm_url, "configured": bool(litellm_url and litellm_key),
-                        "role": "proxy_admin_viewer (read-only)"},
+                        "role": "proxy_admin_viewer (read-only)",
+                        "linking": "unknown personal keys are linked on their first call; "
+                                   "reconcile re-reads every key every 10 minutes"},
             "identity": ("Corp SSO (portal sign-in, employee IDs); " if sso else
                          "Open WebUI password check (portal); ")
                         + "Open WebUI's signed HS256 token (chat)",

@@ -36,7 +36,7 @@ Claude Code ──(personal virtual key)─────────────�
 | The token was minted by this key's Open WebUI | **Platform**, with that app's secret | App key + valid token → the token's email → the person |
 | The hook named the right person | **Platform** | `X-MemMachine-User` is the person's employee ID (or email), and the token carries it |
 | The person has memory on | **Platform**, by registry flag | Otherwise "not enrolled" |
-| Namespace | **Platform** checks the hook's proposal | `org_id` is the person's, the project is granted |
+| Namespace | **Platform** checks the hook's proposal | `org_id` is the person's, the project is one of their grants |
 
 The hook never sees a raw virtual key: LiteLLM strips `Authorization` from the
 headers it gives callbacks and passes the key only as its SHA-256. The hash is
@@ -70,10 +70,12 @@ assumes.
 |---|---|
 | Unknown or missing service credential | 401 |
 | No key id | 401 |
-| Key not registered | 403 `X-MemMachine-Decision: not-enrolled` |
+| Key not registered, and LiteLLM does not say it is an enrolled person's (see below) | 403 `X-MemMachine-Decision: not-enrolled` |
+| Key reconcile unlinked because LiteLLM reassigned it | 403 `key-reassigned` |
 | Personal key | the key's owner |
 | Personal key **and** a user token | 401: tokens are honoured only on their app's key |
-| Personal key naming someone else, or LiteLLM naming another owner | 403 |
+| Personal key naming someone else | 403 |
+| LiteLLM naming another owner for a personal key, or for an app key anyone but its service user | 403 `key-reassigned` |
 | Personal key switched off by its owner, or Open WebUI access switched off | 403 not-enrolled |
 | App key without a token | 401 |
 | App key, token fails signature / issuer / expiry / has no email | 401 |
@@ -81,7 +83,18 @@ assumes.
 | App key without `X-MemMachine-User` | 401 |
 | `X-MemMachine-User` not in the token, or not the token's person | 403 |
 | User disabled | 403 not-enrolled |
-| Body `org_id` not the person's, project not granted, or project header disagrees | 403 |
+| Body `org_id` not the person's | 403 |
+| `X-MemMachine-Project` missing, or not the body's `project_id` | 400 |
+| Project not in the person's grants (and grants are not `*`) | 403 `project-not-granted` |
+| Any path or method other than the three below | 403 `endpoint-not-allowed` |
+
+The platform serves exactly three core paths and forwards their bodies as
+received, with the verified `org_id` and `project_id` in place of the proposed
+ones: `POST /api/v2/memories/search`, `POST /api/v2/memories` (store) and
+`POST /api/v2/memories/list`. Everything else, including deletes and project
+administration, answers 403 rather than 404, so a caller cannot tell a hidden
+endpoint from a forbidden one. The portal has its own path to core for a
+person's own deletes.
 
 The hook treats **not-enrolled** as "memory is off for this person": the chat
 goes on without memory and nothing is stored. Any other refusal is no memory
@@ -98,10 +111,15 @@ dropped.
 
 ## Registry
 
-One namespace per person, `org = employee ID` (or the email slug),
-`project_id = default`. Emails are matched without regard to case. No shared
-namespaces. Memory stored under an org stays there if the person's employee ID
-changes: core cannot move it.
+One org per person, `org = employee ID` (or the email slug), and one or more
+**projects** inside it: the person's grants. A new person gets `default`; the
+single grant `*` means any project. The hook proposes a project per request
+(`X-MemMachine-Project`, equal to the body's `project_id`; the Claude Code
+adapter sends one per repository, the chat adapter `default`) and the platform
+allows it only if granted, then passes `<org>/<project>` to core, creating the
+project there before the first store. Emails are matched without regard to
+case. No shared namespaces. Memory stored under an org stays there if the
+person's employee ID changes: core cannot move it.
 
 ```bash
 A="python -m mock_platform.admin --db registry.sqlite"
@@ -109,13 +127,39 @@ $A service add litellm-prod                     # prints the service credential 
 $A user add alice@corp.example --employee-id E12345
 $A key personal alice@corp.example --key-env ALICE_VIRTUAL_KEY --label alice-personal
 $A key app --key-env OPENWEBUI_APP_KEY --label open-webui-app \
-           --secret-env FORWARD_USER_INFO_HEADER_JWT_SECRET
+           --secret-env FORWARD_USER_INFO_HEADER_JWT_SECRET --owner open-webui
+$A user grant alice@corp.example research       # alice may also use E12345/research
+$A user ungrant alice@corp.example research
+$A user list                                    # everyone, with org, grants and keys
 $A user disable alice@corp.example              # memory off for alice, chat unaffected
 $A show
 ```
 
+Linking a personal key by hand is the exception. With `MOCK_PLATFORM_LITELLM_URL`
+and `MOCK_PLATFORM_LITELLM_KEY` set, **a personal key the platform has never
+seen is looked up in LiteLLM on its first call** (`GET /key/info` with the
+read-only key) and, if LiteLLM's owner for it is an enrolled person, linked and
+served on that same call: a rotated key just works, and inherits the person's
+grants. The platform believes LiteLLM, never the caller: LiteLLM's `user_id`
+must be the person as the platform names them (employee ID, or email without
+one) and must agree with `X-MemMachine-Key-Owner`; a blocked, expired or team
+key, or one owned by a service user, is not linked. An unknown owner stays
+not-enrolled (`KeyLinker.person_for_unknown_owner` is where auto-creating a
+person would go, pending Leo). A failed lookup is remembered for 60 s so a bad
+key does not hit LiteLLM on every request.
+
+**Reconcile** runs every `MOCK_PLATFORM_RECONCILE_SECONDS` (default 600) and
+from the Admin tab's button: it re-reads `/key/list`, drops linked keys that
+are deleted, blocked, expired or whose owner changed (app keys included), and
+links new keys of known people. A key unlinked because LiteLLM reassigned it is
+refused with `key-reassigned` rather than linked to whoever LiteLLM now names,
+until an admin syncs that person's account.
+
 Keys and secrets are read from environment variables, never from arguments.
-A key may be given raw or as LiteLLM's SHA-256.
+A key may be given raw or as LiteLLM's SHA-256. `--owner` is the LiteLLM user
+the app key belongs to (a service user such as `open-webui`, never a person);
+every call on that key must still name it in `X-MemMachine-Key-Owner`, so an
+admin reassigning the key to a person in LiteLLM is noticed, not trusted.
 
 ## Corp SSO (mock Keycloak)
 
@@ -204,7 +248,8 @@ The Memories and "What would it recall?" tabs are unchanged.
   finds that person's personal keys in LiteLLM itself: users with that email, or
   whose `user_id` is the employee ID. Team and blocked keys are skipped. "Sync"
   repeats both lookups, updates the employee ID, and unlinks keys LiteLLM no
-  longer has;
+  longer has; "Reconcile keys with LiteLLM" does for everyone what the
+  background job does every 10 minutes;
 - delete an account (optionally with its memories), switch memory, change role.
   An admin cannot delete or demote themselves;
 - what the platform trusts: LiteLLM deployments, apps with signed tokens, Corp
@@ -232,5 +277,6 @@ SameSite=Strict cookie, and writes also need an `X-MM-Portal` header.
   create or sync time; a change in Keycloak needs a sync.
 - **Disabling is judged when each call arrives.** A store that lands after a
   person is re-enabled is stored.
-- No shared namespaces, one namespace per person.
+- No shared namespaces: one org per person, however many projects. Grants are
+  edited with the CLI; the portal shows them and will edit them later.
 - **The portal has no rate limiting**, and pending sign-ins live in memory.

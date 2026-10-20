@@ -22,23 +22,35 @@ Rules, in order. Each refusal names the step that failed.
 
 1. The service credential must be registered.                       401
 2. A key id must be present.                                        401
-3. An unknown key is a person who has not been enrolled.        not enrolled
+3. An unknown key is a person who has not been enrolled (the app has
+   already asked LiteLLM about it, see linking.py); a key reconcile
+   unlinked because LiteLLM reassigned it stays refused.   not enrolled / 403
 4. A personal key is its owner. An assertion beside it is refused (tokens are
    honoured only on the app key they were issued for), and so is naming
    anyone else as the user or the key's owner.                  401 / 403
-5. A frontend (app) key names nobody: the assertion is required and verified
+5. A frontend (app) key must still belong to its service user in LiteLLM:
+   X-MemMachine-Key-Owner must be the owner recorded for it, as it must for a
+   personal key. Otherwise the key was reassigned.        403 key-reassigned
+   An app key names nobody: the assertion is required and verified
    here with that app's own secret and issuer.                      401
    The person is the token's email, which must be enrolled.     not enrolled
    The hook must name that person in X-MemMachine-User, with a value the token
    itself carries: their employee ID, or their email when they have none.
    A display name someone edited to another employee's ID fails here.  403
 6. A disabled user, or a way in the person switched off.        not enrolled
-7. The body's org_id must be the person's org, and the project the one they
-   hold; X-MemMachine-Project must agree with the body.             403
+7. The body's org_id must be the person's org.                      403
+   X-MemMachine-Project is required and must equal the body's project_id;
+   a missing header or a mismatch is a malformed request.           400
+   The project must be granted to the person (or their grants are `*`);
+   the namespace passed to core is <org>/<project>.    403 project-not-granted
 
 "Not enrolled" is 403 with `X-MemMachine-Decision: not-enrolled`. The hook treats
-that one answer as "memory is off for this person" and carries on without
-memory; every other 401/403 is a refusal it passes to the caller.
+that one answer as "memory is off for this person"; every other 401/403 is a
+refusal. Either way the chat goes on without memory: a refused store is dropped
+(403) or kept for replay (401), never shown to the user. The decision
+header names the step for the audit: `refused`, `key-reassigned` (LiteLLM's
+owner for the key is no longer the one the platform linked it to),
+`project-not-granted` (the person exists but may not use that project).
 """
 from __future__ import annotations
 
@@ -60,6 +72,13 @@ REQUEST_ID_HEADER = "x-request-id"
 STARTED_AT_HEADER = "x-memmachine-request-started"
 DECISION_HEADER = "X-MemMachine-Decision"
 NOT_ENROLLED = "not-enrolled"
+# A path or method the platform does not serve: 403, never 404, so a caller
+# cannot tell a hidden endpoint from a forbidden one.
+ENDPOINT_NOT_ALLOWED = "endpoint-not-allowed"
+# LiteLLM's owner for the key is not the one the platform linked it to.
+KEY_REASSIGNED = "key-reassigned"
+# The person is enrolled but the project the hook proposed is not theirs to use.
+PROJECT_NOT_GRANTED = "project-not-granted"
 
 # Clock difference allowed between Open WebUI, which stamps the token, and here.
 LEEWAY_SECONDS = 30
@@ -87,6 +106,11 @@ class Principal:
     key_label: str
     via: str  # "personal-key" or "app-token"
     client: str = ""
+    project_id: str = "default"  # the granted project this request works in
+
+    @property
+    def org_id(self) -> str:
+        return self.user.org_id
 
 
 def authorize(registry: Registry, headers, now: Optional[float] = None,
@@ -109,6 +133,9 @@ def authorize(registry: Registry, headers, now: Optional[float] = None,
     # 3. Does the platform know that key at all.
     key = registry.key(key_hash)
     if key is None:
+        why = registry.revoked(key_hash)
+        if why:
+            raise Denied(403, f"key unlinked by reconcile: {why}", KEY_REASSIGNED, service=service)
         raise Denied(403, "virtual key not registered", NOT_ENROLLED, service=service)
 
     token = (headers.get(ASSERTION_HEADER) or "").strip()
@@ -126,18 +153,22 @@ def authorize(registry: Registry, headers, now: Optional[float] = None,
             raise Denied(403, "a personal key acts only as its owner", **ctx)
         owner = (headers.get(KEY_OWNER_HEADER) or "").strip()
         if owner and not _same(owner, user.person_id):
-            raise Denied(403, "LiteLLM names a different owner for this key", **ctx)
+            raise Denied(403, "LiteLLM names a different owner for this key", KEY_REASSIGNED, **ctx)
         if not key.enabled:
             raise Denied(403, "key switched off by its owner", NOT_ENROLLED, **ctx)
         via = "personal-key"
     else:
         # 5. The key is an application; the signed token is the person.
         ctx["via"] = "app-token"
-        if not token:
-            raise Denied(401, "app key without a user token", **ctx)
         app = registry.app(key.key_hash)
         if app is None:
             raise Denied(401, "app key has no token configuration", **ctx)
+        owner = (headers.get(KEY_OWNER_HEADER) or "").strip()
+        if not _same(owner, app.owner or ""):
+            raise Denied(403, f"LiteLLM names {owner or 'no one'!r} as this app key's owner, "
+                              f"not its service user", KEY_REASSIGNED, **ctx)
+        if not token:
+            raise Denied(401, "app key without a user token", **ctx)
         claims = _verify_token(token, app.jwt_secret, app.issuer, _judge_at(headers, now), ctx)
         ctx["email"] = claims["email"]
         user = registry.user_by_email(claims["email"])
@@ -159,18 +190,23 @@ def authorize(registry: Registry, headers, now: Optional[float] = None,
         raise Denied(403, "user disabled", NOT_ENROLLED, **ctx)
 
     # 7. The namespace the hook proposed.
+    project_id = user.project_id
     if body is not None:
         org_id = str(body.get("org_id") or "")
         project_id = str(body.get("project_id") or "")
         header_project = (headers.get(PROJECT_HEADER) or "").strip()
+        ctx["namespace"] = f"{org_id}/{project_id}"
         if org_id != user.org_id:
             raise Denied(403, f"org_id {org_id!r} is not this person's", **ctx)
-        if header_project and header_project != project_id:
-            raise Denied(403, "X-MemMachine-Project does not match the body", **ctx)
-        if project_id != user.project_id:
-            raise Denied(403, f"project {project_id!r} is not granted", **ctx)
+        if not header_project:
+            raise Denied(400, "X-MemMachine-Project is required", **ctx)
+        if header_project != project_id:
+            raise Denied(400, "X-MemMachine-Project does not match the body's project_id", **ctx)
+        if not user.allows(project_id):
+            raise Denied(403, f"project {project_id!r} is not granted", PROJECT_NOT_GRANTED, **ctx)
 
-    return Principal(user=user, service=service, key_label=key.label, via=via, client=client)
+    return Principal(user=user, service=service, key_label=key.label, via=via, client=client,
+                     project_id=project_id)
 
 
 def _same(a: str, b: str) -> bool:

@@ -28,6 +28,9 @@ ALICE_KEY = "sk-alice-personal"
 BOB_KEY = "sk-bob-personal"
 ERIN_KEY = "sk-erin-personal"
 APP_KEY = "sk-open-webui-app"
+# A second Open WebUI whose key belongs to a LiteLLM service user.
+OWNED_APP_KEY = "sk-open-webui-owned"
+APP_OWNER = "svc-open-webui"
 STRANGER_KEY = "sk-not-registered"
 
 # Alice and Bob have employee IDs (Corp SSO); Erin has none, so her email stands in.
@@ -56,6 +59,7 @@ def world(tmp_path):
     reg.link_personal_key("bob@corp.example", BOB_KEY, "bob-personal")
     reg.link_personal_key("erin@corp.example", ERIN_KEY, "erin-personal")
     reg.add_app_key(APP_KEY, "open-webui-app", SECRET, "open-webui")
+    reg.add_app_key(OWNED_APP_KEY, "open-webui-owned", SECRET, "open-webui", owner=APP_OWNER)
     reg.set_enabled("dora@corp.example", False)
 
     core_requests = []
@@ -103,13 +107,16 @@ def ns(org, project="default"):
 
 
 def search(world, org=None, project="default", body=None, project_header=None, **kw):
+    """A search as the hook sends it: X-MemMachine-Project names the body's project."""
     body = body or {**ns(org or "", project), "query": "what do I like?", "top_k": 5,
                     "types": ["episodic"]}
+    if project_header is None:
+        project_header = body.get("project_id")
     return world.client.post("/api/v2/memories/search", json=body,
                              headers=headers(world, project=project_header, **kw))
 
 
-def store(world, org=None, project="default", body=None, **kw):
+def store(world, org=None, project="default", body=None, project_header=None, **kw):
     body = body or {
         **ns(org or "", project),
         "types": [],
@@ -120,7 +127,10 @@ def store(world, org=None, project="default", body=None, **kw):
              "role": "assistant", "metadata": {"user_id": "", "session_id": ""}},
         ],
     }
-    return world.client.post("/api/v2/memories", json=body, headers=headers(world, **kw))
+    if project_header is None:
+        project_header = body.get("project_id")
+    return world.client.post("/api/v2/memories", json=body,
+                             headers=headers(world, project=project_header, **kw))
 
 
 def as_owui(email, **kw):
@@ -174,19 +184,23 @@ class TestPersonalKey:
     def test_litellm_owner_must_be_the_linked_person(self, world):
         # The key was reassigned in LiteLLM after the platform linked it.
         r = search(world, key=ALICE_KEY, owner="E67890", org="E12345")
-        assert r.status_code == 403 and decision(r) == "refused"
+        assert r.status_code == 403 and decision(r) == "key-reassigned"
+        assert world.reg.audit(1)[0]["decision"] == "key-reassigned"
 
     def test_another_persons_org_is_refused(self, world):
         r = search(world, key=ALICE_KEY, org="E67890")
         assert r.status_code == 403 and decision(r) == "refused"
         assert world.core == []
 
-    def test_only_known_fields_reach_core(self, world):
+    def test_search_body_reaches_core_intact(self, world):
+        # Only the namespace is the platform's to state; the rest is the caller's.
         body = {**ns("E12345"), "query": "x", "top_k": 1, "types": [],
-                "filter": "producer_id = 'bob'"}
+                "filter": "producer_id = 'bob'", "expand_context": 2}
         r = search(world, key=ALICE_KEY, body=body)
         assert r.status_code == 200
-        assert "filter" not in world.core[-1]["json"]
+        sent = world.core[-1]["json"]
+        assert sent["filter"] == "producer_id = 'bob'" and sent["expand_context"] == 2
+        assert (sent["org_id"], sent["project_id"]) == ("E12345", "default")
 
 
 class TestAppKey:
@@ -248,16 +262,122 @@ class TestAppKey:
         assert world.core == []
 
 
+class TestAppKeyOwner:
+    """A frontend key must still belong to its service user in LiteLLM."""
+
+    def test_right_service_owner_is_served(self, world):
+        r = search(world, key=OWNED_APP_KEY, owner=APP_OWNER, user_token=token("alice@corp.example"),
+                   user="E12345", org="E12345")
+        assert r.status_code == 200
+
+    def test_owner_is_matched_without_regard_to_case(self, world):
+        r = search(world, key=OWNED_APP_KEY, owner=APP_OWNER.upper(),
+                   user_token=token("alice@corp.example"), user="E12345", org="E12345")
+        assert r.status_code == 200
+
+    def test_reassigned_to_a_person_is_refused(self, world):
+        # An admin pointed the Open WebUI key at Bob in LiteLLM: a valid token
+        # rides on a key that is no longer the app's.
+        r = search(world, key=OWNED_APP_KEY, owner="E67890", user_token=token("alice@corp.example"),
+                   user="E12345", org="E12345")
+        assert r.status_code == 403 and decision(r) == "key-reassigned"
+        assert world.core == []
+        last = world.reg.audit(1)[0]
+        assert last["decision"] == "key-reassigned" and last["key_label"] == "open-webui-owned"
+
+    def test_owner_removed_in_litellm_is_refused(self, world):
+        r = search(world, key=OWNED_APP_KEY, user_token=token("alice@corp.example"),
+                   user="E12345", org="E12345")
+        assert r.status_code == 403 and decision(r) == "key-reassigned"
+
+    def test_owner_appearing_on_an_ownerless_key_is_refused(self, world):
+        r = search(world, key=APP_KEY, owner="E67890", user_token=token("alice@corp.example"),
+                   user="E12345", org="E12345")
+        assert r.status_code == 403 and decision(r) == "key-reassigned"
+
+    def test_signed_only_stays(self, world):
+        # The right owner does not stand in for the token: no plain-header mode.
+        r = search(world, key=OWNED_APP_KEY, owner=APP_OWNER, user="E12345", org="E12345")
+        assert r.status_code == 401 and decision(r) == "refused"
+
+    def test_owner_can_be_recorded_later(self, world):
+        world.reg.set_app_owner(APP_KEY, "svc-two")
+        assert world.reg.app(sha256(APP_KEY)).owner == "svc-two"
+        assert world.reg.app_owners() == {APP_OWNER, "svc-two"}
+        r = search(world, **as_owui("alice@corp.example"))
+        assert r.status_code == 403 and decision(r) == "key-reassigned"
+        r = search(world, **as_owui("alice@corp.example"), owner="svc-two")
+        assert r.status_code == 200
+
+
 class TestNamespace:
+    """One org per person; one or more granted projects inside it."""
+
+    def test_new_person_has_only_default(self, world):
+        u = world.reg.add_user("fay@corp.example", employee_id="E55555")
+        assert u.grants == ("default",)
+        assert u.allows("default") and not u.allows("research") and not u.allows("")
+
     def test_project_not_granted_is_403(self, world):
         r = search(world, **as_owui("alice@corp.example", project="payroll"))
-        assert r.status_code == 403 and decision(r) == "refused"
+        assert r.status_code == 403 and decision(r) == "project-not-granted"
         assert world.core == []
+        last = world.reg.audit(1)[0]
+        assert last["decision"] == "project-not-granted" and last["namespace"] == "E12345/payroll"
+
+    def test_granted_project_is_served_in_its_own_namespace(self, world):
+        world.reg.grant("alice@corp.example", "research")
+        assert world.reg.user_by_email("alice@corp.example").grants == ("default", "research")
+        r = search(world, **as_owui("alice@corp.example", project="research"))
+        assert r.status_code == 200
+        sent = world.core[-1]["json"]
+        assert (sent["org_id"], sent["project_id"]) == ("E12345", "research")
+        assert world.reg.audit(1)[0]["namespace"] == "E12345/research"
+
+    def test_ungrant_takes_it_away(self, world):
+        world.reg.grant("alice@corp.example", "research")
+        world.reg.ungrant("alice@corp.example", "research")
+        r = search(world, key=ALICE_KEY, org="E12345", project="research")
+        assert r.status_code == 403 and decision(r) == "project-not-granted"
+
+    def test_star_allows_any_project(self, world):
+        world.reg.grant("bob@corp.example", "*")
+        r = search(world, key=BOB_KEY, org="E67890", project="anything-at-all")
+        assert r.status_code == 200
+        assert world.core[-1]["json"]["project_id"] == "anything-at-all"
+
+    def test_grant_names_use_memmachines_character_set(self, world):
+        with pytest.raises(ValueError):
+            world.reg.grant("alice@corp.example", "pay roll")
+        with pytest.raises(ValueError):
+            world.reg.grant("alice@corp.example", "")
+
+    def test_store_creates_the_granted_project_in_core(self, world):
+        world.reg.grant("alice@corp.example", "research")
+        r = store(world, key=ALICE_KEY, org="E12345", project="research")
+        assert r.status_code == 200
+        assert world.core[0]["path"] == "/api/v2/projects"
+        assert (world.core[0]["json"]["org_id"], world.core[0]["json"]["project_id"]) == ("E12345", "research")
+        assert world.core[-1]["json"]["project_id"] == "research"
 
     def test_project_header_must_match_body(self, world):
         r = search(world, key=APP_KEY, user_token=token("alice@corp.example"), user="E12345",
                    org="E12345", project="default", project_header="payroll")
-        assert r.status_code == 403
+        assert r.status_code == 400 and decision(r) == "refused"
+        assert world.core == []
+
+    def test_project_header_is_required(self, world):
+        r = world.client.post("/api/v2/memories/search", json={**ns("E12345"), "query": "x"},
+                              headers=headers(world, key=ALICE_KEY))
+        assert r.status_code == 400
+        r = world.client.post("/api/v2/memories", json={**ns("E12345"), "messages": []},
+                              headers=headers(world, key=ALICE_KEY))
+        assert r.status_code == 400
+
+    def test_a_granted_project_in_another_org_is_still_refused(self, world):
+        world.reg.grant("alice@corp.example", "research")
+        r = search(world, key=ALICE_KEY, org="E67890", project="research")
+        assert r.status_code == 403 and decision(r) == "refused"
 
     def test_missing_org_is_403(self, world):
         r = search(world, key=ALICE_KEY, org="")
@@ -304,6 +424,16 @@ class TestStore:
         store(world, key=ALICE_KEY, body=body)
         assert world.core[-1]["json"]["messages"][0]["producer"] == "E12345"
 
+    def test_other_fields_reach_core_intact(self, world):
+        body = {**ns("E12345"), "types": ["episodic"], "batch": "b-1", "messages": [
+            {"content": "hi", "role": "user", "timestamp": "2026-10-20T10:00:00Z",
+             "metadata": {"trace": "t-1"}}]}
+        store(world, key=ALICE_KEY, body=body)
+        sent = world.core[-1]["json"]
+        assert sent["batch"] == "b-1" and sent["types"] == ["episodic"]
+        assert sent["messages"][0]["timestamp"] == "2026-10-20T10:00:00Z"
+        assert sent["messages"][0]["metadata"]["trace"] == "t-1"
+
     def test_store_into_another_org_is_refused(self, world):
         r = store(world, key=ALICE_KEY, org="E67890")
         assert r.status_code == 403
@@ -328,7 +458,69 @@ class TestStore:
         assert r.status_code == 401
 
 
-def test_other_core_paths_are_not_exposed(world):
-    r = world.client.post("/api/v2/memories/delete", json={}, headers=headers(world, key=ALICE_KEY))
-    assert r.status_code in (404, 405)
-    assert world.core == []
+class TestList:
+    def test_list_goes_through_authorize_and_reaches_core(self, world):
+        body = {**ns("E12345"), "page_size": 20, "page_num": 0, "filter": "producer_role = 'user'"}
+        r = world.client.post("/api/v2/memories/list", json=body,
+                              headers=headers(world, key=ALICE_KEY, owner="E12345", project="default"))
+        assert r.status_code == 200
+        sent = world.core[-1]["json"]
+        assert sent["page_size"] == 20 and sent["filter"] == "producer_role = 'user'"
+        assert (sent["org_id"], sent["project_id"]) == ("E12345", "default")
+        assert world.core[-1]["path"] == "/api/v2/memories/list"
+        assert world.reg.audit(1)[0]["op"] == "list"
+
+    def test_list_on_an_ungranted_project_is_refused(self, world):
+        r = world.client.post("/api/v2/memories/list", json=ns("E12345", "payroll"),
+                              headers=headers(world, key=ALICE_KEY, project="payroll"))
+        assert r.status_code == 403 and decision(r) == "project-not-granted"
+        assert world.core == []
+
+    def test_list_on_another_org_is_refused(self, world):
+        r = world.client.post("/api/v2/memories/list", json=ns("E67890"),
+                              headers=headers(world, key=ALICE_KEY, project="default"))
+        assert r.status_code == 403 and decision(r) == "refused"
+        assert world.core == []
+
+    def test_list_on_unknown_key_is_not_enrolled(self, world):
+        r = world.client.post("/api/v2/memories/list", json=ns("x"),
+                              headers=headers(world, key=STRANGER_KEY, project="default"))
+        assert r.status_code == 403 and decision(r) == "not-enrolled"
+
+    def test_list_without_service_credential_is_401(self, world):
+        r = world.client.post("/api/v2/memories/list", json=ns("E12345"),
+                              headers=headers(world, key=ALICE_KEY, service="mm-svc-forged",
+                                              project="default"))
+        assert r.status_code == 401
+
+
+class TestOtherEndpoints:
+    @pytest.mark.parametrize("method,path", [
+        ("DELETE", "/api/v2/memories"),
+        ("GET", "/api/v2/projects"),
+        ("POST", "/api/v2/projects"),
+        ("POST", "/api/v2/memories/delete"),
+        ("POST", "/api/v2/memories/episodic/delete"),
+        ("GET", "/api/v2/memories"),
+        ("GET", "/api/v2/memories/search"),
+        ("GET", "/"),
+        ("GET", "/docs"),
+    ])
+    def test_everything_else_is_403_not_404(self, world, method, path):
+        # Even with a valid key: a client cannot tell a hidden endpoint from a forbidden one.
+        r = world.client.request(method, path, json={}, headers=headers(world, key=ALICE_KEY))
+        assert r.status_code == 403 and decision(r) == "endpoint-not-allowed"
+        assert world.core == []
+
+    def test_refusal_is_recorded(self, world):
+        world.client.delete("/api/v2/memories", headers=headers(world, key=ALICE_KEY))
+        last = world.reg.audit(1)[0]
+        assert last["op"] == "DELETE /api/v2/memories" and last["decision"] == "endpoint-not-allowed"
+
+    def test_browser_requests_are_refused_but_not_recorded(self, world):
+        r = world.client.get("/favicon.ico")
+        assert r.status_code == 403
+        assert all(a["op"] != "GET /favicon.ico" for a in world.reg.audit(5))
+
+    def test_health_stays_open(self, world):
+        assert world.client.get("/healthz").status_code == 200
