@@ -82,6 +82,15 @@ assumes.
 | `X-MemMachine-User` not in the token, or not the token's person | 403 |
 | User disabled | 403 not-enrolled |
 | Body `org_id` not the person's, project not granted, or project header disagrees | 403 |
+| Any path or method other than the three below | 403 `endpoint-not-allowed` |
+
+The platform serves exactly three core paths and forwards their bodies as
+received, with the verified `org_id` and `project_id` in place of the proposed
+ones: `POST /api/v2/memories/search`, `POST /api/v2/memories` (store) and
+`POST /api/v2/memories/list`. Everything else, including deletes and project
+administration, answers 403 rather than 404, so a caller cannot tell a hidden
+endpoint from a forbidden one. The portal has its own path to core for a
+person's own deletes.
 
 The hook treats **not-enrolled** as "memory is off for this person": the chat
 goes on without memory and nothing is stored. Every other 401/403 reaches the

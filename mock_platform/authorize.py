@@ -60,6 +60,9 @@ REQUEST_ID_HEADER = "x-request-id"
 STARTED_AT_HEADER = "x-memmachine-request-started"
 DECISION_HEADER = "X-MemMachine-Decision"
 NOT_ENROLLED = "not-enrolled"
+# A path or method the platform does not serve: 403, never 404, so a caller
+# cannot tell a hidden endpoint from a forbidden one.
+ENDPOINT_NOT_ALLOWED = "endpoint-not-allowed"
 
 # Clock difference allowed between Open WebUI, which stamps the token, and here.
 LEEWAY_SECONDS = 30

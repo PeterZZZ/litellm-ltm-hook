@@ -8,16 +8,21 @@ Run against a live stack. Nothing here is collected by pytest.
     LITELLM_URL=http://127.0.0.1:4011 OWUI_URL=http://127.0.0.1:8087 \
     PLATFORM_URL=http://127.0.0.1:8100 PLATFORM_DB=/path/registry.sqlite \
     KEYS_FILE=/path/keys.env ACCOUNTS_FILE=/path/accounts.txt \
-    OWUI_JWT_SECRET=... \
+    OWUI_JWT_SECRET=... PLATFORM_SERVICE_CREDENTIAL=... \
     python3 tools/platform_e2e.py
 
 KEYS_FILE holds ALICE_/BOB_/CAROL_VIRTUAL_KEY and OPENWEBUI_APP_KEY (KEY=value
 lines); ACCOUNTS_FILE holds "email password" lines for the Corp SSO (Keycloak)
 logins, used for both Open WebUI and the portal. OWUI_JWT_SECRET is used only to
-mint tokens the way Open WebUI would, for the replay and expiry checks. Expected:
-alice (E12345) and bob (E67890) enrolled, carol (E24680) not; the hook names
-Open WebUI users by the token's name claim, which SSO sets to the employee ID.
+mint tokens the way Open WebUI would, for the replay and expiry checks.
+PLATFORM_SERVICE_CREDENTIAL is the credential the platform issued to this
+LiteLLM (the hook's MEMMACHINE_API_KEY); the checks that need a header the hook
+would never send (a wrong key owner, a project that disagrees with the body, a
+path the hook does not call) speak to the platform directly as that LiteLLM.
+Expected: alice (E12345) and bob (E67890) enrolled, carol (E24680) not; the hook
+names Open WebUI users by the token's name claim, which SSO sets to the employee ID.
 """
+import hashlib
 import json
 import os
 import sys
@@ -36,6 +41,7 @@ OWUI = os.environ["OWUI_URL"].rstrip("/")
 PLATFORM = os.environ["PLATFORM_URL"].rstrip("/")
 MODEL = os.environ.get("E2E_MODEL", "memmachine-glm-5.2")
 SECRET = os.environ["OWUI_JWT_SECRET"]
+SERVICE = os.environ["PLATFORM_SERVICE_CREDENTIAL"]
 
 keys = dict(line.strip().split("=", 1) for line in open(os.environ["KEYS_FILE"])
             if "=" in line and not line.startswith("#"))
@@ -62,6 +68,36 @@ def post(url, body, token, headers=None):
             return r.status, json.load(r)
     except urllib.error.HTTPError as e:
         return e.code, e.read().decode()[:160]
+
+
+def platform(path, body, key, *, method="POST", owner=None, user=None, token=None,
+             project=None):
+    """Call the platform as the hook would, as this LiteLLM, on `key`.
+
+    Returns (status, X-MemMachine-Decision, body). What the hook sends is what
+    the platform sees, so the headers are the Platform API's, built here.
+    """
+    h = {"Content-Type": "application/json", "Authorization": f"Bearer {SERVICE}",
+         "X-MemMachine-Key-Id": hashlib.sha256(key.encode()).hexdigest(),
+         "X-MemMachine-Client": "e2e", "X-Request-Id": f"e2e-{RUN}"}
+    for name, value in (("X-MemMachine-Key-Owner", owner), ("X-MemMachine-User", user),
+                        ("X-MemMachine-User-Assertion", token), ("X-MemMachine-Project", project)):
+        if value is not None:
+            h[name] = value
+    req = urllib.request.Request(f"{PLATFORM}{path}", method=method, headers=h,
+                                 data=json.dumps(body).encode() if body is not None else None)
+    try:
+        with urllib.request.urlopen(req, timeout=120) as r:
+            return r.status, r.headers.get("X-MemMachine-Decision"), r.read().decode()
+    except urllib.error.HTTPError as e:
+        return e.code, e.headers.get("X-MemMachine-Decision"), e.read().decode()[:200]
+
+
+def episodes(search_body_text):
+    """Episode texts in a core search answer."""
+    content = json.loads(search_body_text).get("content") or {}
+    lt = (content.get("episodic_memory") or {}).get("long_term_memory") or {}
+    return [e.get("content") or "" for e in lt.get("episodes") or []]
 
 
 def chat(url, token, text, headers=None):
@@ -175,6 +211,35 @@ check("alice renamed to bob's employee ID: refused", s != 200 and FACT not in a,
 alice = owui_login("alice@corp.example")  # signing in again restores the name from SSO
 check("signing in again restores her name from Corp SSO", owui_me(alice)["name"] == "E12345",
       owui_me(alice)["name"])
+
+# ---- the Platform API itself: what the hook never sends, and the paths it never calls ----
+
+ALICE = dict(key=keys["ALICE_VIRTUAL_KEY"], owner="E12345", user="E12345")
+NS = {"org_id": "E12345", "project_id": "default"}
+
+s, d, body = platform("/api/v2/memories/list", {**NS, "page_size": 500, "page_num": 0},
+                      project="default", **ALICE)
+check("list on a granted project returns core's answer (the fact stored above is in it)",
+      s == 200 and FACT in body, f"{s} {d} {len(body)} bytes")
+
+s, d, body = platform("/api/v2/memories/list", {"org_id": "E12345", "project_id": "payroll"},
+                      project="payroll", **ALICE)
+check("list on an ungranted project: 403", s == 403 and FACT not in body, f"{s} {d} {body}")
+
+s, d, body = platform("/api/v2/memories", None, method="DELETE", **ALICE)
+check("DELETE /api/v2/memories: 403 endpoint-not-allowed", s == 403 and d == "endpoint-not-allowed",
+      f"{s} {d} {body}")
+s, d, body = platform("/api/v2/projects", None, method="GET", **ALICE)
+check("GET /api/v2/projects: 403 endpoint-not-allowed, not 404", s == 403 and d == "endpoint-not-allowed",
+      f"{s} {d} {body}")
+
+SEARCH = {**NS, "query": QUESTION, "top_k": 5, "types": ["episodic"]}
+s1, _, plain = platform("/api/v2/memories/search", SEARCH, project="default", **ALICE)
+s2, _, filtered = platform("/api/v2/memories/search", {**SEARCH, "filter": "producer_id = 'nobody'"},
+                           project="default", **ALICE)
+check("a search body with `filter` reaches core intact: unfiltered finds the fact, filtered finds nothing",
+      s1 == 200 and s2 == 200 and any(FACT in e for e in episodes(plain)) and episodes(filtered) == [],
+      f"{s1}/{s2}: {len(episodes(plain))} episodes unfiltered, {len(episodes(filtered))} filtered")
 
 if os.environ.get("PLATFORM_DB"):
     sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))

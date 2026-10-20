@@ -181,12 +181,15 @@ class TestPersonalKey:
         assert r.status_code == 403 and decision(r) == "refused"
         assert world.core == []
 
-    def test_only_known_fields_reach_core(self, world):
+    def test_search_body_reaches_core_intact(self, world):
+        # Only the namespace is the platform's to state; the rest is the caller's.
         body = {**ns("E12345"), "query": "x", "top_k": 1, "types": [],
-                "filter": "producer_id = 'bob'"}
+                "filter": "producer_id = 'bob'", "expand_context": 2}
         r = search(world, key=ALICE_KEY, body=body)
         assert r.status_code == 200
-        assert "filter" not in world.core[-1]["json"]
+        sent = world.core[-1]["json"]
+        assert sent["filter"] == "producer_id = 'bob'" and sent["expand_context"] == 2
+        assert (sent["org_id"], sent["project_id"]) == ("E12345", "default")
 
 
 class TestAppKey:
@@ -304,6 +307,16 @@ class TestStore:
         store(world, key=ALICE_KEY, body=body)
         assert world.core[-1]["json"]["messages"][0]["producer"] == "E12345"
 
+    def test_other_fields_reach_core_intact(self, world):
+        body = {**ns("E12345"), "types": ["episodic"], "batch": "b-1", "messages": [
+            {"content": "hi", "role": "user", "timestamp": "2026-10-20T10:00:00Z",
+             "metadata": {"trace": "t-1"}}]}
+        store(world, key=ALICE_KEY, body=body)
+        sent = world.core[-1]["json"]
+        assert sent["batch"] == "b-1" and sent["types"] == ["episodic"]
+        assert sent["messages"][0]["timestamp"] == "2026-10-20T10:00:00Z"
+        assert sent["messages"][0]["metadata"]["trace"] == "t-1"
+
     def test_store_into_another_org_is_refused(self, world):
         r = store(world, key=ALICE_KEY, org="E67890")
         assert r.status_code == 403
@@ -328,7 +341,57 @@ class TestStore:
         assert r.status_code == 401
 
 
-def test_other_core_paths_are_not_exposed(world):
-    r = world.client.post("/api/v2/memories/delete", json={}, headers=headers(world, key=ALICE_KEY))
-    assert r.status_code in (404, 405)
-    assert world.core == []
+class TestList:
+    def test_list_goes_through_authorize_and_reaches_core(self, world):
+        body = {**ns("E12345"), "page_size": 20, "page_num": 0, "filter": "producer_role = 'user'"}
+        r = world.client.post("/api/v2/memories/list", json=body,
+                              headers=headers(world, key=ALICE_KEY, owner="E12345"))
+        assert r.status_code == 200
+        sent = world.core[-1]["json"]
+        assert sent["page_size"] == 20 and sent["filter"] == "producer_role = 'user'"
+        assert (sent["org_id"], sent["project_id"]) == ("E12345", "default")
+        assert world.core[-1]["path"] == "/api/v2/memories/list"
+        assert world.reg.audit(1)[0]["op"] == "list"
+
+    def test_list_on_another_org_is_refused(self, world):
+        r = world.client.post("/api/v2/memories/list", json=ns("E67890"),
+                              headers=headers(world, key=ALICE_KEY))
+        assert r.status_code == 403 and decision(r) == "refused"
+        assert world.core == []
+
+    def test_list_on_unknown_key_is_not_enrolled(self, world):
+        r = world.client.post("/api/v2/memories/list", json=ns("x"),
+                              headers=headers(world, key=STRANGER_KEY))
+        assert r.status_code == 403 and decision(r) == "not-enrolled"
+
+    def test_list_without_service_credential_is_401(self, world):
+        r = world.client.post("/api/v2/memories/list", json=ns("E12345"),
+                              headers=headers(world, key=ALICE_KEY, service="mm-svc-forged"))
+        assert r.status_code == 401
+
+
+class TestOtherEndpoints:
+    @pytest.mark.parametrize("method,path", [
+        ("DELETE", "/api/v2/memories"),
+        ("GET", "/api/v2/projects"),
+        ("POST", "/api/v2/projects"),
+        ("POST", "/api/v2/memories/delete"),
+        ("POST", "/api/v2/memories/episodic/delete"),
+        ("GET", "/api/v2/memories"),
+        ("GET", "/api/v2/memories/search"),
+        ("GET", "/"),
+        ("GET", "/docs"),
+    ])
+    def test_everything_else_is_403_not_404(self, world, method, path):
+        # Even with a valid key: a client cannot tell a hidden endpoint from a forbidden one.
+        r = world.client.request(method, path, json={}, headers=headers(world, key=ALICE_KEY))
+        assert r.status_code == 403 and decision(r) == "endpoint-not-allowed"
+        assert world.core == []
+
+    def test_refusal_is_recorded(self, world):
+        world.client.delete("/api/v2/memories", headers=headers(world, key=ALICE_KEY))
+        last = world.reg.audit(1)[0]
+        assert last["op"] == "DELETE /api/v2/memories" and last["decision"] == "endpoint-not-allowed"
+
+    def test_health_stays_open(self, world):
+        assert world.client.get("/healthz").status_code == 200

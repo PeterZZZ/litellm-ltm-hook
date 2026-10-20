@@ -3,17 +3,20 @@
 
 """Mock MemMachine platform: a tenant control server in front of core.
 
-It serves the two core paths the hook uses, at the same URLs, so a hook in
-platform mode only changes MEMMACHINE_BASE_URL and the headers it sends:
+It serves exactly three core paths, at the same URLs, so a hook in platform
+mode only changes MEMMACHINE_BASE_URL and the headers it sends:
 
-    POST /api/v2/memories/search
-    POST /api/v2/memories
+    POST /api/v2/memories/search   search
+    POST /api/v2/memories          store
+    POST /api/v2/memories/list     list
 
 Each request is authorized (see authorize.py): the hook proposes org_id and
 project_id in the body and the platform checks they are the person's before
-anything reaches core. The producer of a stored user turn is still set here,
-since provenance is the platform's to state. Only the fields the hook is known
-to send are passed on. Every other path is 404.
+anything reaches core. Bodies are forwarded as received, with the verified
+org_id and project_id in place of the proposed ones; the producer of a stored
+turn is still set here, since provenance is the platform's to state. Every
+other path or method is 403 with `X-MemMachine-Decision: endpoint-not-allowed`,
+not 404, so a caller cannot tell a hidden endpoint from a forbidden one.
 
     MOCK_PLATFORM_DB=/path/registry.sqlite \
     MOCK_PLATFORM_CORE_URL=http://127.0.0.1:8090 \
@@ -29,13 +32,13 @@ import httpx
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, Response
 
-from .authorize import DECISION_HEADER, NOT_ENROLLED, REQUEST_ID_HEADER, Denied, Principal, authorize
+from .authorize import (DECISION_HEADER, ENDPOINT_NOT_ALLOWED, REQUEST_ID_HEADER, Denied,
+                        Principal, authorize)
 from .registry import Registry
 
 log = logging.getLogger("mock_platform")
 
-_SEARCH_FIELDS = ("query", "top_k", "types")
-_STORE_MESSAGE_FIELDS = ("content", "role", "producer", "produced_for", "metadata", "timestamp")
+_ALL_METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"]
 
 
 def create_app(
@@ -91,15 +94,22 @@ def create_app(
     async def healthz():
         return {"ok": True}
 
+    async def forward(request: Request, op: str, path: str) -> Response:
+        """Authorize, then relay the body as received under the verified namespace."""
+        body = await _json_object(request)
+        principal = decide(request, op, body)
+        payload = {**body, "org_id": principal.user.org_id, "project_id": principal.user.project_id}
+        async with client() as c:
+            resp = await c.post(f"{core_url}{path}", json=payload)
+        return _relay(resp)
+
     @app.post("/api/v2/memories/search")
     async def search(request: Request):
-        body = await _json_object(request)
-        principal = decide(request, "search", body)
-        payload = {k: body[k] for k in _SEARCH_FIELDS if k in body}
-        payload.update(org_id=principal.user.org_id, project_id=principal.user.project_id)
-        async with client() as c:
-            resp = await c.post(f"{core_url}/api/v2/memories/search", json=payload)
-        return _relay(resp)
+        return await forward(request, "search", "/api/v2/memories/search")
+
+    @app.post("/api/v2/memories/list")
+    async def list_memories(request: Request):
+        return await forward(request, "list", "/api/v2/memories/list")
 
     @app.post("/api/v2/memories")
     async def store(request: Request):
@@ -110,7 +120,7 @@ def create_app(
         for m in body.get("messages") or []:
             if not isinstance(m, dict):
                 continue
-            m = {k: m[k] for k in _STORE_MESSAGE_FIELDS if k in m}
+            m = dict(m)
             # Provenance is the platform's to state, not the caller's.
             if m.get("role") == "assistant":
                 m["produced_for"] = user.org_id
@@ -127,12 +137,8 @@ def create_app(
                 meta["session_id"] = user.org_id
             m["metadata"] = meta
             messages.append(m)
-        payload = {
-            "org_id": user.org_id,
-            "project_id": user.project_id,
-            "types": body.get("types", []),
-            "messages": messages,
-        }
+        payload = {**body, "org_id": user.org_id, "project_id": user.project_id,
+                   "messages": messages}
         async with client() as c:
             await _ensure_project(c, user.org_id, user.project_id)
             resp = await c.post(f"{core_url}/api/v2/memories", json=payload)
@@ -157,6 +163,20 @@ def create_app(
         from .portal import mount_portal
 
         mount_portal(app, registry, core_url, owui_url, client, litellm_url, litellm_key, sso=sso)
+
+    # Registered last, so every path and method above wins. The portal keeps
+    # its own answers for its own unknown paths.
+    @app.api_route("/{path:path}", methods=_ALL_METHODS, include_in_schema=False)
+    async def not_allowed(request: Request, path: str):
+        if path == "portal" or path.startswith("portal/"):
+            return JSONResponse({"detail": "not found"}, status_code=404)
+        op = f"{request.method} /{path}"[:80]
+        request_id = (request.headers.get(REQUEST_ID_HEADER) or "")[:80]
+        log.info("op=%r decision=%s status=403 request=%s", op, ENDPOINT_NOT_ALLOWED, request_id)
+        registry.record(op=op, decision=ENDPOINT_NOT_ALLOWED, status=403,
+                        reason="endpoint not served by the platform")
+        return JSONResponse({"detail": "endpoint not served by the platform"}, status_code=403,
+                            headers={DECISION_HEADER: ENDPOINT_NOT_ALLOWED})
 
     return app
 
