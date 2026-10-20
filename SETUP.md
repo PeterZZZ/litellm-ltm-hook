@@ -33,7 +33,7 @@ Everything below assumes `ENV_DIR=/opt/ltm-platform-env`, the repo checked out a
 | LiteLLM | 1.100.1 (`litellm[proxy]`), Postgres 18 for its keys |
 | Open WebUI | 0.11.3 |
 | Keycloak | 26.7.5, OpenJDK 21 |
-| MemMachine core | `MemMachine/MemMachine` at commit `0b15fad` (v2 REST API on :8090), Postgres 18 + pgvector 0.8.1, Qdrant 1.19.0 |
+| MemMachine core | `MemMachine/MemMachine`, branch `speedkick`, commit `0b15fad` of 2026-09-10 (v2 REST API on :8090), Postgres 18 + pgvector 0.8.1, Qdrant 1.19.0 |
 | Models | chat `deepinfra/zai-org/GLM-5.2`, embeddings `openai/text-embedding-3-small`, both through LiteLLM |
 
 ## 0. Prerequisites
@@ -87,10 +87,11 @@ curl -sSL https://github.com/keycloak/keycloak/releases/download/26.7.5/keycloak
 sha1sum keycloak-26.7.5.tar.gz          # must match the line above
 tar xzf keycloak-26.7.5.tar.gz && rm keycloak-26.7.5.tar.gz
 
-# MemMachine core: the upstream repo at the commit this stack was tested with,
+# MemMachine core: the upstream repo's `speedkick` branch, pinned to the commit
+# this stack was tested with (2026-09-10; the branch has moved on since), and
 # installed into its own venv by uv (the workspace's lock file pins everything).
 cd $ENV_DIR/memmachine
-git clone https://github.com/MemMachine/MemMachine.git src
+git clone -b speedkick https://github.com/MemMachine/MemMachine.git src
 (cd src && git checkout 0b15fad && uv sync --package memmachine-server)
 ls src/.venv/bin/memmachine-server
 
