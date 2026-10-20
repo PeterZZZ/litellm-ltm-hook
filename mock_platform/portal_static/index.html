@@ -395,7 +395,7 @@ dialog::backdrop{background:rgba(10,10,20,.45)}
 <dialog id="dlg-clear">
   <form class="dlg" method="dialog" id="clear-form">
     <h3>Delete everything in this namespace?</h3>
-    <p>This removes <b id="clear-n"></b> stored messages and can't be undone. Type <b>delete</b> to confirm.</p>
+    <p>This removes <b id="clear-n"></b> stored messages from <code id="clear-ns"></code> and can't be undone. Type <b>delete</b> to confirm.</p>
     <input class="t" id="clear-confirm" autocomplete="off">
     <div class="row"><button class="btn" value="cancel" formnovalidate>Cancel</button><button class="btn danger solid" id="clear-go" value="go" disabled>Delete everything</button></div>
   </form>
@@ -503,7 +503,7 @@ function show(view) {
   $("#who").classList.toggle("hidden", view === "login" || view === "loading");
 }
 
-const UI_VERSION = "2026-10-20.3";
+const UI_VERSION = "2026-10-20.4";
 async function showLogin() {
   let cfg = { sso: false, password: true };
   try { cfg = await (await fetch("/portal/api/config")).json(); } catch {}
@@ -555,13 +555,13 @@ function renderAccess() {
         h("span", { class: ns.enabled ? "pill ok" : "pill off" }, ns.enabled ? "on" : "paused"))),
       h("td", {}, `${ns.episodes} messages`),
       h("td", {}, h("div", { class: "row-acts" },
-        h("a", { class: "btn sm", href: "/portal/api/export", download: true }, "Export"),
-        h("button", { class: "btn sm danger", onclick: () => openClear(ns.episodes) }, "Delete all")))));
+        h("a", { class: "btn sm", href: `/portal/api/export?project=${encodeURIComponent(ns.project_id)}`, download: true }, "Export"),
+        h("button", { class: "btn sm danger", onclick: () => openClear(ns.episodes, ns.project_id) }, "Delete all")))));
   }
   const g = m.grants || [];
   $("#grants-note").replaceChildren(
     "Projects you may use in your org: ", ...(g.includes("*") ? [h("code", {}, "any")] : g.flatMap((p, i) => [i ? ", " : "", h("code", {}, p)])),
-    ". A client names the project; the platform checks the grant. Memories above are the default project's.");
+    ". A client names the project; the platform checks the grant. The Memories and recall tabs show your default project.");
   const ways = $("#ways"); ways.replaceChildren();
   if (!m.access.length) ways.append(h("p", { class: "muted" }, "Nothing can reach your memory yet."));
   for (const a of m.access) {
@@ -868,12 +868,12 @@ $("#add-form").addEventListener("submit", async e => {
   catch (err) { toast(err.message); }
   finally { $("#add-save").disabled = false; }
 });
-function openClear(n) { $("#clear-n").textContent = n; $("#clear-confirm").value = ""; $("#clear-go").disabled = true; $("#dlg-clear").showModal(); }
+function openClear(n, project) { S.clearProject = project || ""; $("#clear-n").textContent = n; $("#clear-ns").textContent = `${S.me.namespaces[0].org_id} / ${S.clearProject || S.me.namespaces[0].project_id}`; $("#clear-confirm").value = ""; $("#clear-go").disabled = true; $("#dlg-clear").showModal(); }
 $("#clear-confirm").addEventListener("input", e => { $("#clear-go").disabled = e.target.value.trim().toLowerCase() !== "delete"; });
 $("#clear-form").addEventListener("submit", async e => {
   if (e.submitter && e.submitter.value !== "go") return;
   e.preventDefault();
-  try { const r = await api("/portal/api/memories/clear", { body: {} }); $("#dlg-clear").close(); toast(`Deleted ${r.deleted} messages`); await loadTurns(); refreshMe(); }
+  try { const r = await api("/portal/api/memories/clear", { body: { project: S.clearProject } }); $("#dlg-clear").close(); toast(`Deleted ${r.deleted} messages`); await loadTurns(); refreshMe(); }
   catch (err) { toast(err.message); }
 });
 $("#recall-form").addEventListener("submit", e => { e.preventDefault(); const q = $("#recall-q").value.trim(); if (q) recall(q); });

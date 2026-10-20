@@ -231,8 +231,9 @@ Keycloak session. What someone may do here comes from the **platform's** role
 **Everyone, about themselves (Access tab):**
 
 - who they are, how that was established, their employee ID, role and namespace;
-- their namespaces, with memory on/off, stored count, export and delete-all
-  (one personal namespace for now; more come with per-project grants);
+- their namespaces: one row per granted project (`<org>/<project>`), each with
+  its stored count, export and delete-all; memory on/off is per person. The
+  Memories and recall tabs show the default project;
 - every way into their memory, with a switch each: Open WebUI (the app key plus
   their signed token) and each personal LiteLLM key. A switched-off way gets
   "not enrolled": that client keeps working without memory;

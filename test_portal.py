@@ -145,6 +145,39 @@ class TestSignIn:
         assert world.client.get("/portal/api/memories").status_code == 409
 
 
+class TestGrantedProjects:
+    def test_each_granted_project_is_a_namespace_row(self, world):
+        world.reg.grant("alice@corp.example", "research")
+        world.store["alice_corp_example/research"] = [ep(9, "user", "research note", "r")]
+        login(world)
+        me = world.client.get("/portal/api/me").json()
+        assert [(n["project_id"], n["episodes"]) for n in me["namespaces"]] == [("default", 2), ("research", 1)]
+
+    def test_star_is_not_listed(self, world):
+        world.reg.grant("alice@corp.example", "*")
+        login(world)
+        assert [n["project_id"] for n in world.client.get("/portal/api/me").json()["namespaces"]] == ["default"]
+
+    def test_export_and_clear_work_per_project(self, world):
+        world.reg.grant("alice@corp.example", "research")
+        world.store["alice_corp_example/research"] = [ep(9, "user", "research note", "r")]
+        login(world)
+        exported = world.client.get("/portal/api/export?project=research").json()
+        assert exported["namespace"] == "alice_corp_example/research"
+        assert [e["text"] for e in exported["episodes"]] == ["research note"]
+        r = world.client.post("/portal/api/memories/clear", headers=W, json={"project": "research"})
+        assert r.json()["deleted"] == 1
+        assert world.store["alice_corp_example/research"] == []
+        assert len(world.store["alice_corp_example/default"]) == 2  # untouched
+
+    def test_an_ungranted_project_is_refused(self, world):
+        login(world)
+        assert world.client.get("/portal/api/export?project=research").status_code == 403
+        assert world.client.get("/portal/api/memories?project=research").status_code == 403
+        r = world.client.post("/portal/api/memories/clear", headers=W, json={"project": "research"})
+        assert r.status_code == 403
+
+
 class TestOwnMemoryOnly:
     def test_lists_only_own_namespace(self, world):
         login(world)
