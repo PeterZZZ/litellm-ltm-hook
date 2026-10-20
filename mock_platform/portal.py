@@ -78,6 +78,7 @@ def mount_portal(
     litellm_url: Optional[str] = None,
     litellm_key: Optional[str] = None,
     sso=None,
+    linker=None,
 ) -> None:
     owui_url = (owui_url or "").rstrip("/") or None
     litellm_url = (litellm_url or "").rstrip("/") or None
@@ -575,6 +576,21 @@ def mount_portal(
                         namespace=f"{target.org_id}/{target.project_id}")
         return {**synced, "employee_id": employee}
 
+    @app.post("/portal/api/admin/reconcile")
+    async def admin_reconcile(request: Request):
+        """What the background job does every few minutes, now."""
+        actor = admin(request, write=True)
+        if linker is None or not linker.configured:
+            raise HTTPException(409, "LiteLLM lookup is not configured")
+        try:
+            result = await linker.reconcile()
+        except (httpx.HTTPError, RuntimeError) as exc:
+            raise HTTPException(502, f"LiteLLM not reachable: {exc}") from None
+        registry.record(op="admin:reconcile", decision="allow", status=200, email=actor.email,
+                        reason=f"by {actor.email}; checked {result['checked']}; linked "
+                               f"{result['linked'] or 'none'}; unlinked {result['unlinked'] or 'none'}")
+        return result
+
     @app.post("/portal/api/admin/users/delete")
     async def admin_delete(request: Request):
         actor = admin(request, write=True)
@@ -599,7 +615,9 @@ def mount_portal(
             "services": registry.services(),
             "apps": registry.app_keys(),
             "litellm": {"url": litellm_url, "configured": bool(litellm_url and litellm_key),
-                        "role": "proxy_admin_viewer (read-only)"},
+                        "role": "proxy_admin_viewer (read-only)",
+                        "linking": "unknown personal keys are linked on their first call; "
+                                   "reconcile re-reads every key every 10 minutes"},
             "identity": ("Corp SSO (portal sign-in, employee IDs); " if sso else
                          "Open WebUI password check (portal); ")
                         + "Open WebUI's signed HS256 token (chat)",

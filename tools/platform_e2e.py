@@ -8,7 +8,7 @@ Run against a live stack. Nothing here is collected by pytest.
     LITELLM_URL=http://127.0.0.1:4011 OWUI_URL=http://127.0.0.1:8087 \
     PLATFORM_URL=http://127.0.0.1:8100 PLATFORM_DB=/path/registry.sqlite \
     KEYS_FILE=/path/keys.env ACCOUNTS_FILE=/path/accounts.txt \
-    OWUI_JWT_SECRET=... PLATFORM_SERVICE_CREDENTIAL=... \
+    OWUI_JWT_SECRET=... PLATFORM_SERVICE_CREDENTIAL=... LITELLM_MASTER_KEY=... \
     python3 tools/platform_e2e.py
 
 KEYS_FILE holds ALICE_/BOB_/CAROL_VIRTUAL_KEY, OPENWEBUI_APP_KEY and
@@ -20,7 +20,9 @@ PLATFORM_SERVICE_CREDENTIAL is the credential the platform issued to this
 LiteLLM (the hook's MEMMACHINE_API_KEY); the checks that need a header the hook
 would never send (a wrong key owner, a project that disagrees with the body, a
 path the hook does not call) speak to the platform directly as that LiteLLM.
-Expected: alice (E12345) and bob (E67890) enrolled, carol (E24680) not; the hook
+LITELLM_MASTER_KEY creates, blocks, reassigns and deletes the throwaway keys the
+key-linking checks need; everything it creates is named after the run and
+deleted at the end. Expected: alice (E12345) and bob (E67890) enrolled, carol (E24680) not; the hook
 names Open WebUI users by the token's name claim, which SSO sets to the employee ID.
 """
 import hashlib
@@ -43,6 +45,7 @@ PLATFORM = os.environ["PLATFORM_URL"].rstrip("/")
 MODEL = os.environ.get("E2E_MODEL", "memmachine-glm-5.2")
 SECRET = os.environ["OWUI_JWT_SECRET"]
 SERVICE = os.environ["PLATFORM_SERVICE_CREDENTIAL"]
+MASTER = os.environ["LITELLM_MASTER_KEY"]
 
 keys = dict(line.strip().split("=", 1) for line in open(os.environ["KEYS_FILE"])
             if "=" in line and not line.startswith("#"))
@@ -132,13 +135,8 @@ def check(name, ok, detail):
     print(f"{'PASS' if ok else 'FAIL'}  {name}\n      {detail[:150]}")
 
 
-def clear_earlier_runs(email):
-    """Delete this script's leftovers from earlier runs, through the portal.
-
-    Every run stores its question verbatim, and identical questions from earlier
-    runs outrank the new fact in recall; left alone, each run makes the next one
-    less likely to pass.
-    """
+def portal_as(email):
+    """Sign in to the portal through Corp SSO as `email`; return a caller for its API."""
     jar, _ = sso_login(f"{PLATFORM}/portal/auth/login", email, accounts[email])
 
     def portal(path, body=None):
@@ -148,7 +146,25 @@ def clear_earlier_runs(email):
             method="POST" if body is not None else "GET")
         with jar.open(req, timeout=120) as r:
             return json.load(r)
+    return portal
 
+
+def litellm_admin(path, body):
+    """LiteLLM's own admin API, with the master key: the keys the linking checks need."""
+    status, out = post(f"{LITELLM}{path}", body, MASTER)
+    if status != 200:
+        raise RuntimeError(f"LiteLLM {path}: {status} {out}")
+    return out
+
+
+def clear_earlier_runs(email):
+    """Delete this script's leftovers from earlier runs, through the portal.
+
+    Every run stores its question verbatim, and identical questions from earlier
+    runs outrank the new fact in recall; left alone, each run makes the next one
+    less likely to pass.
+    """
+    portal = portal_as(email)
     ids = [i for t in portal("/portal/api/memories")["turns"]
            if "codename of project" in (t["you"] or "") + (t["reply"] or "") for i in t["ids"]]
     if ids:
@@ -299,6 +315,83 @@ if os.environ.get("PLATFORM_DB"):
         check("a newly created person has only `default`", newcomer.grants == ("default",), str(newcomer.grants))
     finally:
         reg.delete_user(newcomer.email)
+
+    # ---- keys the platform has never seen: looked up in LiteLLM, linked on the first call ----
+    sha = lambda k: hashlib.sha256(k.encode()).hexdigest()  # noqa: E731
+    made_keys, made_users, made_teams = [], [], []
+
+    def new_key(**spec):
+        k = litellm_admin("/key/generate", {"key_alias": f"e2e-{RUN}-{len(made_keys)}", **spec})["key"]
+        made_keys.append(k)
+        return k
+
+    admin_portal = portal_as("admin@corp.example")
+    try:
+        rotated = new_key(user_id="E12345", key_alias=f"alice-rotated-{RUN}")
+        s, a = chat(LL, rotated, QUESTION)
+        linked = reg.key(sha(rotated))
+        check("alice's brand-new key (owner E12345 in LiteLLM): linked and served on its first call, no Sync",
+              s == 200 and FACT in a and linked is not None and linked.user_id == "alice_corp_example",
+              f"{s} linked={linked.label if linked else None} {a}")
+
+        stranger_id = f"E8{RUN[:5].upper()}"
+        litellm_admin("/user/new", {"user_id": stranger_id, "user_email": f"stranger-{RUN}@corp.example",
+                                    "user_role": "internal_user", "auto_create_key": False})
+        made_users.append(stranger_id)
+        stranger = new_key(user_id=stranger_id)
+        s, a = chat(LL, stranger, QUESTION)
+        check(f"a key whose LiteLLM owner {stranger_id} nobody enrolled: chat works, no memory, not linked",
+              s == 200 and FACT not in a and reg.key(sha(stranger)) is None, a)
+
+        blocked = new_key(user_id="E12345")
+        litellm_admin("/key/block", {"key": blocked})
+        s, d, body = platform("/api/v2/memories/search", SEARCH, project="default", key=blocked, owner="E12345")
+        check("a blocked key of alice's: not linked, not-enrolled",
+              s == 403 and d == "not-enrolled" and reg.key(sha(blocked)) is None, f"{s} {d} {body}")
+
+        team_id = litellm_admin("/team/new", {"team_alias": f"e2e-{RUN}"})["team_id"]
+        made_teams.append(team_id)
+        team_key = new_key(user_id="E12345", team_id=team_id)
+        s, d, body = platform("/api/v2/memories/search", SEARCH, project="default", key=team_key, owner="E12345")
+        check("a team key, even with alice as its user: not linked, not-enrolled",
+              s == 403 and d == "not-enrolled" and reg.key(sha(team_key)) is None, f"{s} {d} {body}")
+
+        made_up = sha(f"never-issued-{RUN}")
+        for _ in range(2):
+            s, d, body = platform("/api/v2/memories/search", SEARCH, project="default",
+                                  key=f"never-issued-{RUN}", owner="E12345")
+        lookups = [r for r in reg.audit(200) if r["op"] == "link" and made_up[:12] in (r["reason"] or "")]
+        check("a key LiteLLM does not know, asked twice within 60 s: looked up once (miss cached)",
+              s == 403 and d == "not-enrolled" and len(lookups) == 1, f"{s} {d} lookups={len(lookups)}")
+
+        litellm_admin("/key/update", {"key": rotated, "user_id": "E67890"})
+        s, a = chat(LL, rotated, QUESTION)
+        check("alice's linked key reassigned to bob in LiteLLM: the next call is refused (key-reassigned)",
+              s != 200 and FACT not in a, f"{s} {a}")
+        r = admin_portal("/portal/api/admin/reconcile", {})
+        s, d, body = platform("/api/v2/memories/search", {**SEARCH, "org_id": "E67890"}, project="default",
+                              key=rotated, owner="E67890")
+        check("reconcile unlinks the reassigned key; it is not linked to bob on its next call: 403 key-reassigned",
+              reg.key(sha(rotated)) is None and s == 403 and d == "key-reassigned",
+              f"reconcile unlinked={r['unlinked']}; then {s} {d} {body}")
+
+        gone = new_key(user_id="E12345")
+        s, d, _ = platform("/api/v2/memories/search", SEARCH, project="default", key=gone, owner="E12345")
+        litellm_admin("/key/delete", {"keys": [gone]})
+        made_keys.remove(gone)
+        r = admin_portal("/portal/api/admin/reconcile", {})
+        check("reconcile drops a key deleted in LiteLLM",
+              s == 200 and reg.key(sha(gone)) is None and any("deleted" in u for u in r["unlinked"]),
+              f"linked on first call: {s}; reconcile unlinked={r['unlinked']}")
+    finally:
+        if made_keys:
+            litellm_admin("/key/delete", {"keys": made_keys})
+        for t in made_teams:
+            litellm_admin("/team/delete", {"team_ids": [t]})
+        if made_users:
+            litellm_admin("/user/delete", {"user_ids": made_users})
+        admin_portal("/portal/api/admin/reconcile", {})  # forget the deleted keys now, not in 10 minutes
+        print(f"(removed {len(made_keys)} keys, {len(made_teams)} team, {len(made_users)} user made for this run)")
 
     reg.set_enabled("alice@corp.example", False)
     try:

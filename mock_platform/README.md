@@ -70,7 +70,8 @@ assumes.
 |---|---|
 | Unknown or missing service credential | 401 |
 | No key id | 401 |
-| Key not registered | 403 `X-MemMachine-Decision: not-enrolled` |
+| Key not registered, and LiteLLM does not say it is an enrolled person's (see below) | 403 `X-MemMachine-Decision: not-enrolled` |
+| Key reconcile unlinked because LiteLLM reassigned it | 403 `key-reassigned` |
 | Personal key | the key's owner |
 | Personal key **and** a user token | 401: tokens are honoured only on their app's key |
 | Personal key naming someone else | 403 |
@@ -130,6 +131,26 @@ $A user list                                    # everyone, with org, grants and
 $A user disable alice@corp.example              # memory off for alice, chat unaffected
 $A show
 ```
+
+Linking a personal key by hand is the exception. With `MOCK_PLATFORM_LITELLM_URL`
+and `MOCK_PLATFORM_LITELLM_KEY` set, **a personal key the platform has never
+seen is looked up in LiteLLM on its first call** (`GET /key/info` with the
+read-only key) and, if LiteLLM's owner for it is an enrolled person, linked and
+served on that same call: a rotated key just works, and inherits the person's
+grants. The platform believes LiteLLM, never the caller: LiteLLM's `user_id`
+must be the person as the platform names them (employee ID, or email without
+one) and must agree with `X-MemMachine-Key-Owner`; a blocked, expired or team
+key, or one owned by a service user, is not linked. An unknown owner stays
+not-enrolled (`KeyLinker.person_for_unknown_owner` is where auto-creating a
+person would go, pending Leo). A failed lookup is remembered for 60 s so a bad
+key does not hit LiteLLM on every request.
+
+**Reconcile** runs every `MOCK_PLATFORM_RECONCILE_SECONDS` (default 600) and
+from the Admin tab's button: it re-reads `/key/list`, drops linked keys that
+are deleted, blocked, expired or whose owner changed (app keys included), and
+links new keys of known people. A key unlinked because LiteLLM reassigned it is
+refused with `key-reassigned` rather than linked to whoever LiteLLM now names,
+until an admin syncs that person's account.
 
 Keys and secrets are read from environment variables, never from arguments.
 A key may be given raw or as LiteLLM's SHA-256. `--owner` is the LiteLLM user
@@ -224,7 +245,8 @@ The Memories and "What would it recall?" tabs are unchanged.
   finds that person's personal keys in LiteLLM itself: users with that email, or
   whose `user_id` is the employee ID. Team and blocked keys are skipped. "Sync"
   repeats both lookups, updates the employee ID, and unlinks keys LiteLLM no
-  longer has;
+  longer has; "Reconcile keys with LiteLLM" does for everyone what the
+  background job does every 10 minutes;
 - delete an account (optionally with its memories), switch memory, change role.
   An admin cannot delete or demote themselves;
 - what the platform trusts: LiteLLM deployments, apps with signed tokens, Corp

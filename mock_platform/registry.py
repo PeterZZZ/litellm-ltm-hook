@@ -3,7 +3,7 @@
 
 """The mock platform's registry: who exists, which keys they hold, who may call.
 
-SQLite, six tables, nothing a real tenant control server would not also need:
+SQLite, seven tables, nothing a real tenant control server would not also need:
 
     services  one row per LiteLLM deployment allowed to call the platform. Only
               the SHA-256 of its credential is stored, as LiteLLM stores keys.
@@ -20,6 +20,9 @@ SQLite, six tables, nothing a real tenant control server would not also need:
               its owner and can be switched off by them. An *app* key (Open
               WebUI's shared key) names nobody, so a request on it must carry a
               signed user token instead.
+    revoked   keys reconcile unlinked because LiteLLM reassigned them: refused
+              (`key-reassigned`) rather than linked again to whoever LiteLLM
+              now names, until an admin syncs that person's account.
     apps      for each app key, how to verify the tokens that may ride on it,
               and which LiteLLM service user owns the key: LiteLLM's owner must
               still be that user on every call, as it must for personal keys.
@@ -66,6 +69,11 @@ CREATE TABLE IF NOT EXISTS apps (
     key_hash   TEXT PRIMARY KEY REFERENCES keys(key_hash),
     jwt_secret TEXT NOT NULL,
     issuer     TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS revoked (
+    key_hash TEXT PRIMARY KEY,
+    reason   TEXT NOT NULL,
+    at       REAL NOT NULL
 );
 CREATE TABLE IF NOT EXISTS grants (
     user_id TEXT NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
@@ -203,6 +211,23 @@ class Registry:
             "SELECT * FROM keys WHERE key_hash = ?", (key_hash_value,)
         ).fetchone()
         return _key(row)
+
+    def revoked(self, key_hash_value: str) -> Optional[str]:
+        """Why this key was unlinked, if reconcile unlinked it for a reassignment."""
+        row = self._db.execute("SELECT reason FROM revoked WHERE key_hash = ?",
+                               (key_hash_value,)).fetchone()
+        return row["reason"] if row else None
+
+    def revoked_keys(self) -> list[str]:
+        return [r["key_hash"] for r in self._db.execute("SELECT key_hash FROM revoked")]
+
+    def forget_revoked(self, key_hash_value: str) -> None:
+        """The key is gone from LiteLLM: nothing left to refuse."""
+        with self._db:
+            self._db.execute("DELETE FROM revoked WHERE key_hash = ?", (key_hash_value,))
+
+    def keys(self) -> list[Key]:
+        return [_key(r) for r in self._db.execute("SELECT * FROM keys ORDER BY label")]
 
     def app(self, key_hash_value: str) -> Optional[App]:
         row = self._db.execute(
@@ -384,6 +409,8 @@ class Registry:
         return self.key(key_hash_value)
 
     def link_personal_key(self, email: str, raw_or_hash: str, label: str) -> Key:
+        """Link a key to a person. An admin (or their Sync) linking a key that
+        reconcile revoked accepts the reassignment, so the mark goes."""
         user = self._require(email)
         h = key_hash(raw_or_hash)
         with self._db:
@@ -391,6 +418,7 @@ class Registry:
                 "INSERT INTO keys (key_hash, kind, user_id, label) VALUES (?, 'personal', ?, ?)",
                 (h, user.user_id, label),
             )
+            self._db.execute("DELETE FROM revoked WHERE key_hash = ?", (h,))
         return self.key(h)
 
     def add_app_key(self, raw_or_hash: str, label: str, jwt_secret: str, issuer: str,
@@ -417,11 +445,16 @@ class Registry:
             raise KeyError(h)
         return self.app(h)
 
-    def unlink_key(self, raw_or_hash: str) -> None:
+    def unlink_key(self, raw_or_hash: str, reason: Optional[str] = None) -> None:
+        """Forget a key. With a `reason` naming an owner change, the key is also
+        marked revoked so it is not linked again on its next call."""
         h = key_hash(raw_or_hash)
         with self._db:
             self._db.execute("DELETE FROM apps WHERE key_hash = ?", (h,))
             self._db.execute("DELETE FROM keys WHERE key_hash = ?", (h,))
+            if reason and "owner" in reason:
+                self._db.execute("INSERT OR REPLACE INTO revoked (key_hash, reason, at) VALUES (?, ?, ?)",
+                                 (h, reason, time.time()))
 
     def dump(self) -> dict:
         q = lambda sql: [dict(r) for r in self._db.execute(sql)]  # noqa: E731

@@ -24,6 +24,8 @@ not 404, so a caller cannot tell a hidden endpoint from a forbidden one.
 """
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import logging
 import os
 from typing import Optional
@@ -32,8 +34,9 @@ import httpx
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, Response
 
-from .authorize import (DECISION_HEADER, ENDPOINT_NOT_ALLOWED, REQUEST_ID_HEADER, Denied,
-                        Principal, authorize)
+from .authorize import (DECISION_HEADER, ENDPOINT_NOT_ALLOWED, KEY_ID_HEADER, KEY_OWNER_HEADER,
+                        REQUEST_ID_HEADER, Denied, Principal, authorize)
+from .linking import RECONCILE_SECONDS, KeyLinker
 from .registry import Registry
 
 log = logging.getLogger("mock_platform")
@@ -51,17 +54,47 @@ def create_app(
     litellm_url: Optional[str] = None,
     litellm_key: Optional[str] = None,
     sso=None,
+    linker: Optional[KeyLinker] = None,
+    reconcile_seconds: float = RECONCILE_SECONDS,
 ) -> FastAPI:
-    """The platform API; with `owui_url` or `sso`, also the portal at /portal/."""
-    app = FastAPI(title="MemMachine mock platform", docs_url=None, redoc_url=None)
+    """The platform API; with `owui_url` or `sso`, also the portal at /portal/.
+
+    With `litellm_url` and `litellm_key` (a read-only LiteLLM identity) the
+    platform links unknown personal keys itself on their first call and
+    reconciles its keys with LiteLLM every `reconcile_seconds` (0: never).
+    """
     core_url = core_url.rstrip("/")
     known_projects: set[tuple[str, str]] = set()
 
     def client() -> httpx.AsyncClient:
         return httpx.AsyncClient(timeout=timeout, transport=transport)
 
-    def decide(request: Request, op: str, body: dict) -> Principal:
+    linker = linker or KeyLinker(registry, litellm_url, litellm_key, client)
+
+    @contextlib.asynccontextmanager
+    async def lifespan(_app: FastAPI):
+        task = None
+        if linker.configured and reconcile_seconds > 0:
+            task = asyncio.create_task(_reconcile_loop(linker, reconcile_seconds))
+        try:
+            yield
+        finally:
+            if task:
+                task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await task
+
+    app = FastAPI(title="MemMachine mock platform", docs_url=None, redoc_url=None,
+                  lifespan=lifespan)
+
+    async def decide(request: Request, op: str, body: dict) -> Principal:
         request_id = (request.headers.get(REQUEST_ID_HEADER) or "")[:80]
+        key_hash = (request.headers.get(KEY_ID_HEADER) or "").strip().lower()
+        if key_hash and registry.key(key_hash) is None and registry.service_label(
+                _bearer(request.headers.get("authorization"))):
+            # A key the platform has never seen, vouched for by a known LiteLLM:
+            # ask that LiteLLM whose it is before deciding.
+            await linker.link_unknown(key_hash, (request.headers.get(KEY_OWNER_HEADER) or "").strip())
         try:
             principal = authorize(registry, request.headers, body=body)
         except Denied as exc:
@@ -98,7 +131,7 @@ def create_app(
     async def forward(request: Request, op: str, path: str) -> Response:
         """Authorize, then relay the body as received under the verified namespace."""
         body = await _json_object(request)
-        principal = decide(request, op, body)
+        principal = await decide(request, op, body)
         payload = {**body, "org_id": principal.org_id, "project_id": principal.project_id}
         async with client() as c:
             resp = await c.post(f"{core_url}{path}", json=payload)
@@ -115,7 +148,7 @@ def create_app(
     @app.post("/api/v2/memories")
     async def store(request: Request):
         body = await _json_object(request)
-        principal = decide(request, "store", body)
+        principal = await decide(request, "store", body)
         user = principal.user
         messages = []
         for m in body.get("messages") or []:
@@ -163,7 +196,8 @@ def create_app(
     if owui_url or sso:
         from .portal import mount_portal
 
-        mount_portal(app, registry, core_url, owui_url, client, litellm_url, litellm_key, sso=sso)
+        mount_portal(app, registry, core_url, owui_url, client, litellm_url, litellm_key, sso=sso,
+                     linker=linker)
 
     # Registered last, so every path and method above wins. The portal keeps
     # its own answers for its own unknown paths.
@@ -180,6 +214,20 @@ def create_app(
                             headers={DECISION_HEADER: ENDPOINT_NOT_ALLOWED})
 
     return app
+
+
+def _bearer(authorization: Optional[str]) -> str:
+    scheme, _, credential = (authorization or "").partition(" ")
+    return credential.strip() if scheme.lower() == "bearer" else ""
+
+
+async def _reconcile_loop(linker: KeyLinker, every: float) -> None:
+    while True:
+        await asyncio.sleep(every)
+        try:
+            await linker.reconcile()
+        except Exception as exc:  # keep the loop alive; the next run may succeed
+            log.warning("reconcile failed: %s: %s", type(exc).__name__, exc)
 
 
 async def _json_object(request: Request) -> dict:
@@ -216,6 +264,7 @@ def _from_env() -> FastAPI:
         litellm_url=os.environ.get("MOCK_PLATFORM_LITELLM_URL") or None,
         litellm_key=os.environ.get("MOCK_PLATFORM_LITELLM_KEY") or None,
         sso=_sso_from_env(),
+        reconcile_seconds=float(os.environ.get("MOCK_PLATFORM_RECONCILE_SECONDS", RECONCILE_SECONDS)),
     )
 
 

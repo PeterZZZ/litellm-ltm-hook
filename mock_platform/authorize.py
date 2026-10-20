@@ -22,7 +22,9 @@ Rules, in order. Each refusal names the step that failed.
 
 1. The service credential must be registered.                       401
 2. A key id must be present.                                        401
-3. An unknown key is a person who has not been enrolled.        not enrolled
+3. An unknown key is a person who has not been enrolled (the app has
+   already asked LiteLLM about it, see linking.py); a key reconcile
+   unlinked because LiteLLM reassigned it stays refused.   not enrolled / 403
 4. A personal key is its owner. An assertion beside it is refused (tokens are
    honoured only on the app key they were issued for), and so is naming
    anyone else as the user or the key's owner.                  401 / 403
@@ -130,6 +132,9 @@ def authorize(registry: Registry, headers, now: Optional[float] = None,
     # 3. Does the platform know that key at all.
     key = registry.key(key_hash)
     if key is None:
+        why = registry.revoked(key_hash)
+        if why:
+            raise Denied(403, f"key unlinked by reconcile: {why}", KEY_REASSIGNED, service=service)
         raise Denied(403, "virtual key not registered", NOT_ENROLLED, service=service)
 
     token = (headers.get(ASSERTION_HEADER) or "").strip()

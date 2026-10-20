@@ -184,13 +184,19 @@ $A key app --key-env OPENWEBUI_APP_KEY --label open-webui-app \
 $A user add admin@corp.example --role admin --employee-id E10000
 $A user add alice@corp.example --employee-id E12345
 $A user add bob@corp.example   --employee-id E67890
-$A key personal alice@corp.example --key-env ALICE_VIRTUAL_KEY --label alice-personal-e12345
-$A key personal bob@corp.example   --key-env BOB_VIRTUAL_KEY   --label bob-personal-e67890
 $A show
 ```
 
+Nobody's personal key is linked by hand: with `MOCK_PLATFORM_LITELLM_KEY` set,
+the platform asks LiteLLM about a key the first time it is used and links it to
+its owner if that owner is enrolled (alice's and bob's keys, created in step 7
+with `user_id` = employee ID, link themselves on their first chat). Every 10
+minutes, and from the Admin tab's "Reconcile" button, it re-reads LiteLLM's key
+list and drops keys that are gone, blocked or reassigned.
+
 Carol is left out on purpose: the end-to-end checks expect one person with a
-Keycloak login and a LiteLLM key but no memory account. Later accounts can be
+Keycloak login and a LiteLLM key but no memory account, so her key is never
+linked. Later accounts can be
 created from the portal instead (Admin tab); the platform then takes the
 employee ID from Keycloak and finds the personal keys in LiteLLM itself.
 

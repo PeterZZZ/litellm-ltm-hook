@@ -345,8 +345,9 @@ dialog::backdrop{background:rgba(10,10,20,.45)}
     <!-- ADMIN -->
     <section id="t-admin" class="hidden">
       <div class="card sec">
-        <div class="sec-h"><h3>Accounts</h3><span class="muted" style="font-size:13px" id="acct-count"></span></div>
-        <p class="sub">Create an account by email. The platform then looks up that person's personal keys in LiteLLM itself, with its own read-only key, so a key can never be attached to the wrong owner.</p>
+        <div class="sec-h"><h3>Accounts</h3><span class="muted" style="font-size:13px" id="acct-count"></span>
+          <button class="btn sm" id="reconcile-btn" style="margin-left:auto" title="Re-read every key in LiteLLM now: drop keys that are gone, blocked or reassigned, link new keys of known people. Runs on its own every 10 minutes.">Reconcile keys with LiteLLM</button></div>
+        <p class="sub">Create an account by email. The platform looks up that person's keys in LiteLLM itself, with its own read-only key, so a key can never be attached to the wrong owner; a new personal key of a known person is linked the first time it is used.</p>
         <form class="create" id="create-form">
           <div><label class="f" for="new-email">Email</label><input class="t" id="new-email" type="email" placeholder="dana@corp.example" required></div>
           <div><label class="f" for="new-role">Role</label><select class="t" id="new-role"><option value="user">User</option><option value="admin">Admin</option></select></div>
@@ -641,6 +642,14 @@ async function adminSync(email) {
     loadUsers(); loadAudit();
   } catch (e) { toast(e.message); }
 }
+$("#reconcile-btn").addEventListener("click", async () => {
+  const b = $("#reconcile-btn"); b.disabled = true;
+  try {
+    const r = await api("/portal/api/admin/reconcile", { body: {} });
+    toast(`Checked ${r.checked} keys in LiteLLM; linked ${r.linked.length ? r.linked.join(", ") : "nothing new"}${r.unlinked.length ? "; unlinked " + r.unlinked.join(", ") : ""}`);
+    loadUsers(); loadAudit();
+  } catch (e) { toast(e.message); } finally { b.disabled = false; }
+});
 $("#create-form").addEventListener("submit", async e => {
   e.preventDefault();
   const email = $("#new-email").value.trim(), role = $("#new-role").value;
@@ -680,7 +689,7 @@ async function loadTrust() {
         h("small", {}, t.sso ? `${t.sso.issuer} · client ${t.sso.client} · ${t.sso.directory}` : "portal sign-in falls back to Open WebUI passwords")),
       h("div", { class: "tbox" }, h("h4", {}, "Key lookup in LiteLLM"),
         h("div", {}, h("span", { class: t.litellm.configured ? "pill ok" : "pill off" }, t.litellm.configured ? "connected" : "not configured")),
-        h("small", {}, t.litellm.configured ? `${t.litellm.role} · ${t.litellm.url}` : "accounts get no keys automatically")));
+        h("small", {}, t.litellm.configured ? `${t.litellm.role} · ${t.litellm.url} · ${t.litellm.linking}` : "accounts get no keys automatically")));
   } catch (e) { box.replaceChildren(h("div", {}, e.message)); }
 }
 const ACHIPS = [["all", "All"], ["allow", "Allowed"], ["not-enrolled", "No memory"], ["refused", "Refused"], ["admin", "Admin actions"]];
