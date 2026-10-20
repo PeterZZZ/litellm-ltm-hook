@@ -105,7 +105,8 @@ def login(world, email="alice@corp.example", password=None):
 
 
 def evidence(world, key, token=None, user=None):
-    h = {"authorization": f"Bearer {world.svc}", "x-memmachine-key-id": sha256(key)}
+    h = {"authorization": f"Bearer {world.svc}", "x-memmachine-key-id": sha256(key),
+         "x-memmachine-project": "default"}
     if token:
         h["x-memmachine-user-assertion"] = token
     if user:
@@ -134,6 +135,7 @@ class TestSignIn:
         me = world.client.get("/portal/api/me").json()
         assert me["role"] == "user"
         assert me["namespaces"][0]["org_id"] == "alice_corp_example"
+        assert me["grants"] == ["default"]
         assert {a["label"] for a in me["access"]} == {"Open WebUI", "alice-personal"}
 
     def test_no_account_names_the_admins(self, world):

@@ -65,21 +65,22 @@ def create_app(
         try:
             principal = authorize(registry, request.headers, body=body)
         except Denied as exc:
-            log.info("op=%s decision=%s status=%s reason=%r request=%s",
-                     op, exc.decision, exc.status, exc.reason, request_id)
+            log.info("op=%s decision=%s status=%s reason=%r namespace=%s request=%s",
+                     op, exc.decision, exc.status, exc.reason,
+                     exc.context.get("namespace") or "-", request_id)
             registry.record(op=op, decision=exc.decision, status=exc.status, reason=exc.reason,
                             **exc.context)
             raise
         u = principal.user
         log.info(
             "op=%s decision=allow service=%s via=%s client=%s key=%s user=%s person=%s "
-            "namespace=%s/%s request=%s",
+            "org=%s project=%s request=%s",
             op, principal.service, principal.via, principal.client or "-", principal.key_label,
-            u.email, u.person_id, u.org_id, u.project_id, request_id,
+            u.email, u.person_id, principal.org_id, principal.project_id, request_id,
         )
         registry.record(op=op, decision="allow", status=200, service=principal.service,
                         via=principal.via, key_label=principal.key_label, email=u.email,
-                        namespace=f"{u.org_id}/{u.project_id}")
+                        namespace=f"{principal.org_id}/{principal.project_id}")
         return principal
 
     @app.exception_handler(Denied)
@@ -98,7 +99,7 @@ def create_app(
         """Authorize, then relay the body as received under the verified namespace."""
         body = await _json_object(request)
         principal = decide(request, op, body)
-        payload = {**body, "org_id": principal.user.org_id, "project_id": principal.user.project_id}
+        payload = {**body, "org_id": principal.org_id, "project_id": principal.project_id}
         async with client() as c:
             resp = await c.post(f"{core_url}{path}", json=payload)
         return _relay(resp)
@@ -137,10 +138,10 @@ def create_app(
                 meta["session_id"] = user.org_id
             m["metadata"] = meta
             messages.append(m)
-        payload = {**body, "org_id": user.org_id, "project_id": user.project_id,
+        payload = {**body, "org_id": principal.org_id, "project_id": principal.project_id,
                    "messages": messages}
         async with client() as c:
-            await _ensure_project(c, user.org_id, user.project_id)
+            await _ensure_project(c, principal.org_id, principal.project_id)
             resp = await c.post(f"{core_url}/api/v2/memories", json=payload)
         return _relay(resp)
 

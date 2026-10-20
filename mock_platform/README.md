@@ -36,7 +36,7 @@ Claude Code ──(personal virtual key)─────────────�
 | The token was minted by this key's Open WebUI | **Platform**, with that app's secret | App key + valid token → the token's email → the person |
 | The hook named the right person | **Platform** | `X-MemMachine-User` is the person's employee ID (or email), and the token carries it |
 | The person has memory on | **Platform**, by registry flag | Otherwise "not enrolled" |
-| Namespace | **Platform** checks the hook's proposal | `org_id` is the person's, the project is granted |
+| Namespace | **Platform** checks the hook's proposal | `org_id` is the person's, the project is one of their grants |
 
 The hook never sees a raw virtual key: LiteLLM strips `Authorization` from the
 headers it gives callbacks and passes the key only as its SHA-256. The hash is
@@ -82,7 +82,9 @@ assumes.
 | App key without `X-MemMachine-User` | 401 |
 | `X-MemMachine-User` not in the token, or not the token's person | 403 |
 | User disabled | 403 not-enrolled |
-| Body `org_id` not the person's, project not granted, or project header disagrees | 403 |
+| Body `org_id` not the person's | 403 |
+| `X-MemMachine-Project` missing, or not the body's `project_id` | 400 |
+| Project not in the person's grants (and grants are not `*`) | 403 `project-not-granted` |
 | Any path or method other than the three below | 403 `endpoint-not-allowed` |
 
 The platform serves exactly three core paths and forwards their bodies as
@@ -105,10 +107,15 @@ stored. Refused stores are not replayed later.
 
 ## Registry
 
-One namespace per person, `org = employee ID` (or the email slug),
-`project_id = default`. Emails are matched without regard to case. No shared
-namespaces. Memory stored under an org stays there if the person's employee ID
-changes: core cannot move it.
+One org per person, `org = employee ID` (or the email slug), and one or more
+**projects** inside it: the person's grants. A new person gets `default`; the
+single grant `*` means any project. The hook proposes a project per request
+(`X-MemMachine-Project`, equal to the body's `project_id`; the Claude Code
+adapter sends one per repository, the chat adapter `default`) and the platform
+allows it only if granted, then passes `<org>/<project>` to core, creating the
+project there before the first store. Emails are matched without regard to
+case. No shared namespaces. Memory stored under an org stays there if the
+person's employee ID changes: core cannot move it.
 
 ```bash
 A="python -m mock_platform.admin --db registry.sqlite"
@@ -117,6 +124,9 @@ $A user add alice@corp.example --employee-id E12345
 $A key personal alice@corp.example --key-env ALICE_VIRTUAL_KEY --label alice-personal
 $A key app --key-env OPENWEBUI_APP_KEY --label open-webui-app \
            --secret-env FORWARD_USER_INFO_HEADER_JWT_SECRET --owner open-webui
+$A user grant alice@corp.example research       # alice may also use E12345/research
+$A user ungrant alice@corp.example research
+$A user list                                    # everyone, with org, grants and keys
 $A user disable alice@corp.example              # memory off for alice, chat unaffected
 $A show
 ```
@@ -242,5 +252,6 @@ SameSite=Strict cookie, and writes also need an `X-MM-Portal` header.
   create or sync time; a change in Keycloak needs a sync.
 - **Disabling is judged when each call arrives.** A store that lands after a
   person is re-enabled is stored.
-- No shared namespaces, one namespace per person.
+- No shared namespaces: one org per person, however many projects. Grants are
+  edited with the CLI; the portal shows them and will edit them later.
 - **The portal has no rate limiting**, and pending sign-ins live in memory.

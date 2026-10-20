@@ -225,7 +225,8 @@ check("list on a granted project returns core's answer (the fact stored above is
 
 s, d, body = platform("/api/v2/memories/list", {"org_id": "E12345", "project_id": "payroll"},
                       project="payroll", **ALICE)
-check("list on an ungranted project: 403", s == 403 and FACT not in body, f"{s} {d} {body}")
+check("list on an ungranted project: 403 project-not-granted",
+      s == 403 and d == "project-not-granted" and FACT not in body, f"{s} {d} {body}")
 
 s, d, body = platform("/api/v2/memories", None, method="DELETE", **ALICE)
 check("DELETE /api/v2/memories: 403 endpoint-not-allowed", s == 403 and d == "endpoint-not-allowed",
@@ -262,6 +263,43 @@ if os.environ.get("PLATFORM_DB"):
     from mock_platform.registry import Registry
 
     reg = Registry(os.environ["PLATFORM_DB"])
+
+    # ---- grants: one org per person, one or more projects inside it ----
+    PROJECT = f"research-{RUN}"
+    reg.grant("alice@corp.example", PROJECT)
+    try:
+        s, a = chat(LL, keys["ALICE_VIRTUAL_KEY"], QUESTION, {"x-memmachine-project": PROJECT})
+        check(f"alice's key on granted project {PROJECT}: served, in its own namespace (fact not there)",
+              s == 200 and FACT not in a, a)
+        s, d, body = platform("/api/v2/memories/list", {"org_id": "E12345", "project_id": PROJECT},
+                              project=PROJECT, **ALICE)
+        check("list on the granted project: core answers for E12345/" + PROJECT, s == 200, f"{s} {d}")
+    finally:
+        reg.ungrant("alice@corp.example", PROJECT)
+    s, d, body = platform("/api/v2/memories/search", {**SEARCH, "project_id": PROJECT},
+                          project=PROJECT, **ALICE)
+    check("same project after ungrant: 403 project-not-granted",
+          s == 403 and d == "project-not-granted", f"{s} {d} {body}")
+    s, a = chat(LL, keys["ALICE_VIRTUAL_KEY"], QUESTION, {"x-memmachine-project": "payroll"})
+    check("alice's key via LiteLLM on ungranted project payroll: the hook refuses the chat",
+          s != 200 and FACT not in a, f"{s} {a}")
+    reg.grant("bob@corp.example", "*")
+    try:
+        s, d, body = platform("/api/v2/memories/list", {"org_id": "E67890", "project_id": f"any-{RUN}"},
+                              project=f"any-{RUN}", key=keys["BOB_VIRTUAL_KEY"], owner="E67890")
+        check("bob granted *: an arbitrary project name is allowed", s == 200, f"{s} {d}")
+    finally:
+        reg.ungrant("bob@corp.example", "*")
+    s, d, body = platform("/api/v2/memories/search", SEARCH, project="payroll", **ALICE)
+    check("X-MemMachine-Project disagreeing with the body's project_id: 400", s == 400, f"{s} {d} {body}")
+    s, d, body = platform("/api/v2/memories/search", SEARCH, **ALICE)
+    check("no X-MemMachine-Project at all: 400", s == 400, f"{s} {d} {body}")
+    newcomer = reg.add_user(f"e2e-{RUN}@corp.example", employee_id=f"E9{RUN[:5].upper()}")
+    try:
+        check("a newly created person has only `default`", newcomer.grants == ("default",), str(newcomer.grants))
+    finally:
+        reg.delete_user(newcomer.email)
+
     reg.set_enabled("alice@corp.example", False)
     try:
         s, a = chat(OW, alice, QUESTION)

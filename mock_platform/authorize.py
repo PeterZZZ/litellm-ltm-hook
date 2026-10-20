@@ -36,14 +36,18 @@ Rules, in order. Each refusal names the step that failed.
    itself carries: their employee ID, or their email when they have none.
    A display name someone edited to another employee's ID fails here.  403
 6. A disabled user, or a way in the person switched off.        not enrolled
-7. The body's org_id must be the person's org, and the project the one they
-   hold; X-MemMachine-Project must agree with the body.             403
+7. The body's org_id must be the person's org.                      403
+   X-MemMachine-Project is required and must equal the body's project_id;
+   a missing header or a mismatch is a malformed request.           400
+   The project must be granted to the person (or their grants are `*`);
+   the namespace passed to core is <org>/<project>.    403 project-not-granted
 
 "Not enrolled" is 403 with `X-MemMachine-Decision: not-enrolled`. The hook treats
 that one answer as "memory is off for this person" and carries on without
 memory; every other 401/403 is a refusal it passes to the caller. The decision
 header names the step for the audit: `refused`, `key-reassigned` (LiteLLM's
-owner for the key is no longer the one the platform linked it to).
+owner for the key is no longer the one the platform linked it to),
+`project-not-granted` (the person exists but may not use that project).
 """
 from __future__ import annotations
 
@@ -70,6 +74,8 @@ NOT_ENROLLED = "not-enrolled"
 ENDPOINT_NOT_ALLOWED = "endpoint-not-allowed"
 # LiteLLM's owner for the key is not the one the platform linked it to.
 KEY_REASSIGNED = "key-reassigned"
+# The person is enrolled but the project the hook proposed is not theirs to use.
+PROJECT_NOT_GRANTED = "project-not-granted"
 
 # Clock difference allowed between Open WebUI, which stamps the token, and here.
 LEEWAY_SECONDS = 30
@@ -97,6 +103,11 @@ class Principal:
     key_label: str
     via: str  # "personal-key" or "app-token"
     client: str = ""
+    project_id: str = "default"  # the granted project this request works in
+
+    @property
+    def org_id(self) -> str:
+        return self.user.org_id
 
 
 def authorize(registry: Registry, headers, now: Optional[float] = None,
@@ -173,18 +184,23 @@ def authorize(registry: Registry, headers, now: Optional[float] = None,
         raise Denied(403, "user disabled", NOT_ENROLLED, **ctx)
 
     # 7. The namespace the hook proposed.
+    project_id = user.project_id
     if body is not None:
         org_id = str(body.get("org_id") or "")
         project_id = str(body.get("project_id") or "")
         header_project = (headers.get(PROJECT_HEADER) or "").strip()
+        ctx["namespace"] = f"{org_id}/{project_id}"
         if org_id != user.org_id:
             raise Denied(403, f"org_id {org_id!r} is not this person's", **ctx)
-        if header_project and header_project != project_id:
-            raise Denied(403, "X-MemMachine-Project does not match the body", **ctx)
-        if project_id != user.project_id:
-            raise Denied(403, f"project {project_id!r} is not granted", **ctx)
+        if not header_project:
+            raise Denied(400, "X-MemMachine-Project is required", **ctx)
+        if header_project != project_id:
+            raise Denied(400, "X-MemMachine-Project does not match the body's project_id", **ctx)
+        if not user.allows(project_id):
+            raise Denied(403, f"project {project_id!r} is not granted", PROJECT_NOT_GRANTED, **ctx)
 
-    return Principal(user=user, service=service, key_label=key.label, via=via, client=client)
+    return Principal(user=user, service=service, key_label=key.label, via=via, client=client,
+                     project_id=project_id)
 
 
 def _same(a: str, b: str) -> bool:

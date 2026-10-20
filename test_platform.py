@@ -107,13 +107,16 @@ def ns(org, project="default"):
 
 
 def search(world, org=None, project="default", body=None, project_header=None, **kw):
+    """A search as the hook sends it: X-MemMachine-Project names the body's project."""
     body = body or {**ns(org or "", project), "query": "what do I like?", "top_k": 5,
                     "types": ["episodic"]}
+    if project_header is None:
+        project_header = body.get("project_id")
     return world.client.post("/api/v2/memories/search", json=body,
                              headers=headers(world, project=project_header, **kw))
 
 
-def store(world, org=None, project="default", body=None, **kw):
+def store(world, org=None, project="default", body=None, project_header=None, **kw):
     body = body or {
         **ns(org or "", project),
         "types": [],
@@ -124,7 +127,10 @@ def store(world, org=None, project="default", body=None, **kw):
              "role": "assistant", "metadata": {"user_id": "", "session_id": ""}},
         ],
     }
-    return world.client.post("/api/v2/memories", json=body, headers=headers(world, **kw))
+    if project_header is None:
+        project_header = body.get("project_id")
+    return world.client.post("/api/v2/memories", json=body,
+                             headers=headers(world, project=project_header, **kw))
 
 
 def as_owui(email, **kw):
@@ -305,15 +311,73 @@ class TestAppKeyOwner:
 
 
 class TestNamespace:
+    """One org per person; one or more granted projects inside it."""
+
+    def test_new_person_has_only_default(self, world):
+        u = world.reg.add_user("fay@corp.example", employee_id="E55555")
+        assert u.grants == ("default",)
+        assert u.allows("default") and not u.allows("research") and not u.allows("")
+
     def test_project_not_granted_is_403(self, world):
         r = search(world, **as_owui("alice@corp.example", project="payroll"))
-        assert r.status_code == 403 and decision(r) == "refused"
+        assert r.status_code == 403 and decision(r) == "project-not-granted"
         assert world.core == []
+        last = world.reg.audit(1)[0]
+        assert last["decision"] == "project-not-granted" and last["namespace"] == "E12345/payroll"
+
+    def test_granted_project_is_served_in_its_own_namespace(self, world):
+        world.reg.grant("alice@corp.example", "research")
+        assert world.reg.user_by_email("alice@corp.example").grants == ("default", "research")
+        r = search(world, **as_owui("alice@corp.example", project="research"))
+        assert r.status_code == 200
+        sent = world.core[-1]["json"]
+        assert (sent["org_id"], sent["project_id"]) == ("E12345", "research")
+        assert world.reg.audit(1)[0]["namespace"] == "E12345/research"
+
+    def test_ungrant_takes_it_away(self, world):
+        world.reg.grant("alice@corp.example", "research")
+        world.reg.ungrant("alice@corp.example", "research")
+        r = search(world, key=ALICE_KEY, org="E12345", project="research")
+        assert r.status_code == 403 and decision(r) == "project-not-granted"
+
+    def test_star_allows_any_project(self, world):
+        world.reg.grant("bob@corp.example", "*")
+        r = search(world, key=BOB_KEY, org="E67890", project="anything-at-all")
+        assert r.status_code == 200
+        assert world.core[-1]["json"]["project_id"] == "anything-at-all"
+
+    def test_grant_names_use_memmachines_character_set(self, world):
+        with pytest.raises(ValueError):
+            world.reg.grant("alice@corp.example", "pay roll")
+        with pytest.raises(ValueError):
+            world.reg.grant("alice@corp.example", "")
+
+    def test_store_creates_the_granted_project_in_core(self, world):
+        world.reg.grant("alice@corp.example", "research")
+        r = store(world, key=ALICE_KEY, org="E12345", project="research")
+        assert r.status_code == 200
+        assert world.core[0]["path"] == "/api/v2/projects"
+        assert (world.core[0]["json"]["org_id"], world.core[0]["json"]["project_id"]) == ("E12345", "research")
+        assert world.core[-1]["json"]["project_id"] == "research"
 
     def test_project_header_must_match_body(self, world):
         r = search(world, key=APP_KEY, user_token=token("alice@corp.example"), user="E12345",
                    org="E12345", project="default", project_header="payroll")
-        assert r.status_code == 403
+        assert r.status_code == 400 and decision(r) == "refused"
+        assert world.core == []
+
+    def test_project_header_is_required(self, world):
+        r = world.client.post("/api/v2/memories/search", json={**ns("E12345"), "query": "x"},
+                              headers=headers(world, key=ALICE_KEY))
+        assert r.status_code == 400
+        r = world.client.post("/api/v2/memories", json={**ns("E12345"), "messages": []},
+                              headers=headers(world, key=ALICE_KEY))
+        assert r.status_code == 400
+
+    def test_a_granted_project_in_another_org_is_still_refused(self, world):
+        world.reg.grant("alice@corp.example", "research")
+        r = search(world, key=ALICE_KEY, org="E67890", project="research")
+        assert r.status_code == 403 and decision(r) == "refused"
 
     def test_missing_org_is_403(self, world):
         r = search(world, key=ALICE_KEY, org="")
@@ -398,7 +462,7 @@ class TestList:
     def test_list_goes_through_authorize_and_reaches_core(self, world):
         body = {**ns("E12345"), "page_size": 20, "page_num": 0, "filter": "producer_role = 'user'"}
         r = world.client.post("/api/v2/memories/list", json=body,
-                              headers=headers(world, key=ALICE_KEY, owner="E12345"))
+                              headers=headers(world, key=ALICE_KEY, owner="E12345", project="default"))
         assert r.status_code == 200
         sent = world.core[-1]["json"]
         assert sent["page_size"] == 20 and sent["filter"] == "producer_role = 'user'"
@@ -406,20 +470,27 @@ class TestList:
         assert world.core[-1]["path"] == "/api/v2/memories/list"
         assert world.reg.audit(1)[0]["op"] == "list"
 
+    def test_list_on_an_ungranted_project_is_refused(self, world):
+        r = world.client.post("/api/v2/memories/list", json=ns("E12345", "payroll"),
+                              headers=headers(world, key=ALICE_KEY, project="payroll"))
+        assert r.status_code == 403 and decision(r) == "project-not-granted"
+        assert world.core == []
+
     def test_list_on_another_org_is_refused(self, world):
         r = world.client.post("/api/v2/memories/list", json=ns("E67890"),
-                              headers=headers(world, key=ALICE_KEY))
+                              headers=headers(world, key=ALICE_KEY, project="default"))
         assert r.status_code == 403 and decision(r) == "refused"
         assert world.core == []
 
     def test_list_on_unknown_key_is_not_enrolled(self, world):
         r = world.client.post("/api/v2/memories/list", json=ns("x"),
-                              headers=headers(world, key=STRANGER_KEY))
+                              headers=headers(world, key=STRANGER_KEY, project="default"))
         assert r.status_code == 403 and decision(r) == "not-enrolled"
 
     def test_list_without_service_credential_is_401(self, world):
         r = world.client.post("/api/v2/memories/list", json=ns("E12345"),
-                              headers=headers(world, key=ALICE_KEY, service="mm-svc-forged"))
+                              headers=headers(world, key=ALICE_KEY, service="mm-svc-forged",
+                                              project="default"))
         assert r.status_code == 401
 
 

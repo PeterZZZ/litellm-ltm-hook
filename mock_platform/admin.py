@@ -6,6 +6,9 @@
     python -m mock_platform.admin --db reg.sqlite service add litellm-main
     python -m mock_platform.admin --db reg.sqlite user add alice@corp.example
     python -m mock_platform.admin --db reg.sqlite user role admin@corp.example admin
+    python -m mock_platform.admin --db reg.sqlite user grant alice@corp.example research
+    python -m mock_platform.admin --db reg.sqlite user ungrant alice@corp.example research
+    python -m mock_platform.admin --db reg.sqlite user list
     python -m mock_platform.admin --db reg.sqlite key personal alice@corp.example --key-env ALICE_VIRTUAL_KEY --label alice-personal
     python -m mock_platform.admin --db reg.sqlite key app --key-env OPENWEBUI_APP_KEY --label open-webui-app --secret-env FORWARD_USER_INFO_HEADER_JWT_SECRET --owner open-webui
     python -m mock_platform.admin --db reg.sqlite key owner --key-env OPENWEBUI_APP_KEY --owner open-webui
@@ -53,6 +56,12 @@ def main(argv=None) -> None:
     u_role = usr.add_parser("role", help="set a person's platform role")
     u_role.add_argument("email")
     u_role.add_argument("role", choices=("user", "admin"))
+    for action, help_ in (("grant", "let a person use a project in their org (* = any)"),
+                          ("ungrant", "take a project away again")):
+        u_g = usr.add_parser(action, help=help_)
+        u_g.add_argument("email")
+        u_g.add_argument("project")
+    usr.add_parser("list", help="everyone, with their org, grants and keys")
 
     key = sub.add_parser("key").add_subparsers(dest="action", required=True)
     k_personal = key.add_parser("personal", help="link a person's own virtual key")
@@ -84,6 +93,15 @@ def main(argv=None) -> None:
         print(json.dumps(reg.add_user(a.email, a.project, a.role, a.employee_id).__dict__))
     elif a.cmd == "user" and a.action == "role":
         print(json.dumps(reg.set_role(a.email, a.role).__dict__))
+    elif a.cmd == "user" and a.action in ("grant", "ungrant"):
+        u = getattr(reg, a.action)(a.email, a.project)
+        print(f"{u.email}: org {u.org_id}, projects {', '.join(u.grants) or 'none'}")
+    elif a.cmd == "user" and a.action == "list":
+        for u in reg.users():
+            keys_ = ", ".join(k.label for k in reg.personal_keys(u.user_id)) or "no personal keys"
+            print(f"{u.email:32} {u.employee_id or '-':8} {u.role:5} "
+                  f"{'on ' if u.enabled else 'off'} org {u.org_id}  "
+                  f"projects {', '.join(u.grants) or 'none'}  keys {keys_}")
     elif a.cmd == "user":
         print(json.dumps(reg.set_enabled(a.email, a.action == "enable").__dict__))
     elif a.cmd == "key" and a.action == "personal":

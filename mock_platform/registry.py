@@ -3,14 +3,18 @@
 
 """The mock platform's registry: who exists, which keys they hold, who may call.
 
-SQLite, five tables, nothing a real tenant control server would not also need:
+SQLite, six tables, nothing a real tenant control server would not also need:
 
     services  one row per LiteLLM deployment allowed to call the platform. Only
               the SHA-256 of its credential is stored, as LiteLLM stores keys.
     users     one row per person: their employee ID (from the SSO directory),
-              the one namespace this mock gives them, their platform role (user
-              or admin), whether memory is on, and whether requests from Open
+              their org and default project, their platform role (user or
+              admin), whether memory is on, and whether requests from Open
               WebUI may reach it.
+    grants    which projects a person may use inside their org: one row per
+              project name, or the single entry `*` for any project. A new
+              person gets `default`. The hook proposes a project per request;
+              the platform allows it only if granted.
     keys      LiteLLM virtual keys the platform knows, by their SHA-256 hash,
               which is the only form the hook ever sees. A *personal* key names
               its owner and can be switched off by them. An *app* key (Open
@@ -22,7 +26,8 @@ SQLite, five tables, nothing a real tenant control server would not also need:
     audit     every authorization decision, allowed or not, newest kept.
 
 A person is named by their employee ID, which is also their org; until one is
-known (phase 1, no SSO) the email stands in, slugified for the org.
+known (phase 1, no SSO) the email stands in, slugified for the org. Memory
+lives in `<org>/<project>`: one org per person, one or more projects in it.
 
 The platform role is the platform's own: being an Open WebUI admin grants nothing
 here. The app signing secret is stored as given; a real platform would keep it
@@ -62,6 +67,11 @@ CREATE TABLE IF NOT EXISTS apps (
     jwt_secret TEXT NOT NULL,
     issuer     TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS grants (
+    user_id TEXT NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+    project TEXT NOT NULL,
+    PRIMARY KEY (user_id, project)
+);
 CREATE TABLE IF NOT EXISTS audit (
     id        INTEGER PRIMARY KEY AUTOINCREMENT,
     at        REAL NOT NULL,
@@ -90,6 +100,7 @@ _MIGRATIONS = (
 )
 AUDIT_KEEP = 5000
 ROLES = ("user", "admin")
+ANY_PROJECT = "*"
 
 _HEX64 = re.compile(r"^[0-9a-f]{64}$")
 # MemMachine's org_id/project_id character set, as the hook slugifies them.
@@ -120,16 +131,21 @@ class User:
     user_id: str
     email: str
     org_id: str
-    project_id: str
+    project_id: str  # the default project, where the portal looks
     enabled: bool
     role: str = "user"
     allow_app: bool = True
     created_at: Optional[float] = None
     employee_id: Optional[str] = None
+    grants: tuple[str, ...] = ()
 
     @property
     def is_admin(self) -> bool:
         return self.role == "admin"
+
+    def allows(self, project: str) -> bool:
+        """May this person use `project` inside their org?"""
+        return bool(project) and (ANY_PROJECT in self.grants or project in self.grants)
 
     @property
     def person_id(self) -> str:
@@ -168,6 +184,11 @@ class Registry:
             if column not in have:
                 with self._db:
                     self._db.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
+        # People enrolled before grants existed keep the one project they had.
+        with self._db:
+            self._db.execute(
+                "INSERT OR IGNORE INTO grants (user_id, project) SELECT user_id, project_id "
+                "FROM users WHERE user_id NOT IN (SELECT user_id FROM grants)")
 
     # ---- reads, used on every request ----
 
@@ -191,7 +212,7 @@ class Registry:
 
     def user(self, user_id: str) -> Optional[User]:
         row = self._db.execute("SELECT * FROM users WHERE user_id = ?", (user_id,)).fetchone()
-        return _user(row)
+        return self._user(row)
 
     def user_by_email(self, email: str) -> Optional[User]:
         # Emails are matched without regard to case here, unlike the hook's own
@@ -200,7 +221,24 @@ class Registry:
         row = self._db.execute(
             "SELECT * FROM users WHERE lower(email) = lower(?)", (email.strip(),)
         ).fetchone()
-        return _user(row)
+        return self._user(row)
+
+    def user_by_person(self, person: str) -> Optional[User]:
+        """By employee ID or email, whichever `person` is; case does not matter."""
+        person = person.strip()
+        if not person:
+            return None
+        row = self._db.execute(
+            "SELECT * FROM users WHERE lower(employee_id) = lower(?) OR lower(email) = lower(?)",
+            (person, person)).fetchone()
+        return self._user(row)
+
+    def _user(self, row) -> Optional[User]:
+        if row is None:
+            return None
+        grants = tuple(r["project"] for r in self._db.execute(
+            "SELECT project FROM grants WHERE user_id = ? ORDER BY project", (row["user_id"],)))
+        return _user(row, grants)
 
     def personal_keys(self, user_id: str) -> list[Key]:
         rows = self._db.execute(
@@ -209,7 +247,7 @@ class Registry:
         return [_key(r) for r in rows]
 
     def users(self) -> list[User]:
-        return [_user(r) for r in self._db.execute("SELECT * FROM users ORDER BY email")]
+        return [self._user(r) for r in self._db.execute("SELECT * FROM users ORDER BY email")]
 
     def app_keys(self) -> list[dict]:
         return [dict(r) for r in self._db.execute(
@@ -280,7 +318,27 @@ class Registry:
                 (user_id, email, employee_id, slug(employee_id or email), project_id, role,
                  time.time()),
             )
+            self._db.execute("INSERT INTO grants (user_id, project) VALUES (?, ?)",
+                             (user_id, project_id))
         return self.user(user_id)
+
+    def grant(self, email: str, project: str) -> User:
+        """Let the person use `project` in their org; `*` means any project."""
+        user = self._require(email)
+        project = project.strip()
+        if project != ANY_PROJECT and (not project or _ORG_ID_ALLOWED.search(project)):
+            raise ValueError("a project name uses letters, digits, _ - and : (or * for any)")
+        with self._db:
+            self._db.execute("INSERT OR IGNORE INTO grants (user_id, project) VALUES (?, ?)",
+                             (user.user_id, project))
+        return self.user(user.user_id)
+
+    def ungrant(self, email: str, project: str) -> User:
+        user = self._require(email)
+        with self._db:
+            self._db.execute("DELETE FROM grants WHERE user_id = ? AND project = ?",
+                             (user.user_id, project.strip()))
+        return self.user(user.user_id)
 
     def set_employee_id(self, email: str, employee_id: Optional[str]) -> User:
         """Record the person's employee ID; their org follows it.
@@ -300,6 +358,7 @@ class Registry:
         user = self._require(email)
         with self._db:
             self._db.execute("DELETE FROM keys WHERE kind = 'personal' AND user_id = ?", (user.user_id,))
+            self._db.execute("DELETE FROM grants WHERE user_id = ?", (user.user_id,))
             self._db.execute("DELETE FROM users WHERE user_id = ?", (user.user_id,))
         return user
 
@@ -368,9 +427,10 @@ class Registry:
         q = lambda sql: [dict(r) for r in self._db.execute(sql)]  # noqa: E731
         return {
             "services": q("SELECT label FROM services ORDER BY label"),
-            "users": q("SELECT user_id, email, employee_id, role, org_id, project_id, enabled, "
-                       "allow_app "
-                       "FROM users ORDER BY email"),
+            "users": [{"user_id": u.user_id, "email": u.email, "employee_id": u.employee_id,
+                       "role": u.role, "org_id": u.org_id, "project_id": u.project_id,
+                       "grants": list(u.grants), "enabled": u.enabled, "allow_app": u.allow_app}
+                      for u in self.users()],
             "keys": q(
                 "SELECT label, kind, user_id, enabled, substr(key_hash, 1, 12) AS key_hash "
                 "FROM keys ORDER BY label"
@@ -390,13 +450,13 @@ class Registry:
         return self.user(user.user_id)
 
 
-def _user(row) -> Optional[User]:
+def _user(row, grants: tuple[str, ...] = ()) -> Optional[User]:
     if row is None:
         return None
     d = dict(row)
     d["enabled"] = bool(d["enabled"])
     d["allow_app"] = bool(d.get("allow_app", 1))
-    return User(**d)
+    return User(**d, grants=grants)
 
 
 def _key(row) -> Optional[Key]:

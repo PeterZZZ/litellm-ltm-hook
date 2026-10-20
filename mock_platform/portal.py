@@ -49,7 +49,7 @@ from .registry import Registry, User
 COOKIE = "mm_portal"
 # Bumped whenever the page and these routes change together. A tab still running
 # an older page sees a different value and reloads itself instead of breaking.
-UI_VERSION = "2026-10-16.1"
+UI_VERSION = "2026-10-20.1"
 SESSION_SECONDS = 8 * 60 * 60
 LOGIN_SECONDS = 10 * 60  # how long a sign-in may sit at Keycloak
 STATE_COOKIE = "mm_portal_login"
@@ -257,6 +257,7 @@ def mount_portal(
             "email": user.email, "employee_id": user.employee_id, "role": user.role,
             "enabled": user.enabled,
             "allow_app": user.allow_app, "namespace": f"{user.org_id}/{user.project_id}",
+            "org_id": user.org_id, "grants": list(user.grants),
             "keys": [{"label": k.label, "enabled": k.enabled, "hash": k.key_hash[:12]} for k in keys],
             "created_at": user.created_at, "last_seen": seen.get(user.email.lower()),
         }
@@ -389,6 +390,7 @@ def mount_portal(
                 "kind": "Personal", "enabled": user.enabled,
                 "episodes": await episode_count(user),
             }],
+            "grants": list(user.grants),
             "access": access_paths(user),
         }
 
