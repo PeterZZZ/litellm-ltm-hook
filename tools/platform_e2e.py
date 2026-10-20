@@ -11,7 +11,8 @@ Run against a live stack. Nothing here is collected by pytest.
     OWUI_JWT_SECRET=... PLATFORM_SERVICE_CREDENTIAL=... \
     python3 tools/platform_e2e.py
 
-KEYS_FILE holds ALICE_/BOB_/CAROL_VIRTUAL_KEY and OPENWEBUI_APP_KEY (KEY=value
+KEYS_FILE holds ALICE_/BOB_/CAROL_VIRTUAL_KEY, OPENWEBUI_APP_KEY and
+OPENWEBUI_APP_OWNER, the LiteLLM service user that owns the app key (KEY=value
 lines); ACCOUNTS_FILE holds "email password" lines for the Corp SSO (Keycloak)
 logins, used for both Open WebUI and the portal. OWUI_JWT_SECRET is used only to
 mint tokens the way Open WebUI would, for the replay and expiry checks.
@@ -240,6 +241,21 @@ s2, _, filtered = platform("/api/v2/memories/search", {**SEARCH, "filter": "prod
 check("a search body with `filter` reaches core intact: unfiltered finds the fact, filtered finds nothing",
       s1 == 200 and s2 == 200 and any(FACT in e for e in episodes(plain)) and episodes(filtered) == [],
       f"{s1}/{s2}: {len(episodes(plain))} episodes unfiltered, {len(episodes(filtered))} filtered")
+
+# ---- the app key must still be the app's in LiteLLM ----
+
+APP = dict(key=keys["OPENWEBUI_APP_KEY"], user="E12345", project="default")
+APP_OWNER = keys.get("OPENWEBUI_APP_OWNER", "")
+s, d, body = platform("/api/v2/memories/search", SEARCH, owner=APP_OWNER,
+                      token=mint("alice@corp.example"), **APP)
+check(f"app key owned by {APP_OWNER!r} in LiteLLM + alice's valid token: served",
+      s == 200 and any(FACT in e for e in episodes(body)), f"{s} {d}")
+s, d, body = platform("/api/v2/memories/search", SEARCH, owner="E12345",
+                      token=mint("alice@corp.example"), **APP)
+check("same key, LiteLLM now naming a person as its owner: 403 key-reassigned",
+      s == 403 and d == "key-reassigned", f"{s} {d} {body}")
+s, d, body = platform("/api/v2/memories/search", SEARCH, owner=APP_OWNER, **APP)
+check("app key with the right owner but no token: still 401", s == 401, f"{s} {d} {body}")
 
 if os.environ.get("PLATFORM_DB"):
     sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))

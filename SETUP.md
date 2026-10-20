@@ -152,8 +152,10 @@ until curl -sf http://127.0.0.1:4011/health/liveliness >/dev/null; do sleep 3; d
 set -a; . $ENV_DIR/litellm.env; set +a
 L=http://127.0.0.1:4011; H=(-H "Authorization: Bearer $LITELLM_MASTER_KEY" -H "Content-Type: application/json")
 
-# Open WebUI's one shared key: no owner. -> openwebui-connection.env OPENAI_API_KEYS, keys.env OPENWEBUI_APP_KEY
-curl -s "${H[@]}" $L/key/generate -d '{"key_alias": "open-webui-app"}'
+# Open WebUI's one shared key, owned by a LiteLLM service user (never a person).
+# -> openwebui-connection.env OPENAI_API_KEYS, keys.env OPENWEBUI_APP_KEY and OPENWEBUI_APP_OWNER=open-webui
+curl -s "${H[@]}" $L/user/new -d '{"user_id": "open-webui", "user_role": "internal_user_viewer", "auto_create_key": false}'
+curl -s "${H[@]}" $L/key/generate -d '{"user_id": "open-webui", "key_alias": "open-webui-app"}'
 
 # The platform's read-only key, for finding people's personal keys. -> platform.env MOCK_PLATFORM_LITELLM_KEY
 curl -s "${H[@]}" $L/user/new -d '{"user_id": "memmachine-platform", "user_role": "proxy_admin_viewer", "auto_create_key": false}'
@@ -177,7 +179,8 @@ set -a; . $ENV_DIR/keys.env; . $ENV_DIR/openwebui.env; set +a
 
 $A service add litellm-ltm-platform-env       # prints mm-svc-... once -> litellm.env MEMMACHINE_API_KEY
 $A key app --key-env OPENWEBUI_APP_KEY --label open-webui-app \
-           --secret-env FORWARD_USER_INFO_HEADER_JWT_SECRET --issuer open-webui
+           --secret-env FORWARD_USER_INFO_HEADER_JWT_SECRET --issuer open-webui \
+           --owner open-webui                   # the key's LiteLLM user, checked on every call
 $A user add admin@corp.example --role admin --employee-id E10000
 $A user add alice@corp.example --employee-id E12345
 $A user add bob@corp.example   --employee-id E67890

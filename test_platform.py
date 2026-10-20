@@ -28,6 +28,9 @@ ALICE_KEY = "sk-alice-personal"
 BOB_KEY = "sk-bob-personal"
 ERIN_KEY = "sk-erin-personal"
 APP_KEY = "sk-open-webui-app"
+# A second Open WebUI whose key belongs to a LiteLLM service user.
+OWNED_APP_KEY = "sk-open-webui-owned"
+APP_OWNER = "svc-open-webui"
 STRANGER_KEY = "sk-not-registered"
 
 # Alice and Bob have employee IDs (Corp SSO); Erin has none, so her email stands in.
@@ -56,6 +59,7 @@ def world(tmp_path):
     reg.link_personal_key("bob@corp.example", BOB_KEY, "bob-personal")
     reg.link_personal_key("erin@corp.example", ERIN_KEY, "erin-personal")
     reg.add_app_key(APP_KEY, "open-webui-app", SECRET, "open-webui")
+    reg.add_app_key(OWNED_APP_KEY, "open-webui-owned", SECRET, "open-webui", owner=APP_OWNER)
     reg.set_enabled("dora@corp.example", False)
 
     core_requests = []
@@ -174,7 +178,8 @@ class TestPersonalKey:
     def test_litellm_owner_must_be_the_linked_person(self, world):
         # The key was reassigned in LiteLLM after the platform linked it.
         r = search(world, key=ALICE_KEY, owner="E67890", org="E12345")
-        assert r.status_code == 403 and decision(r) == "refused"
+        assert r.status_code == 403 and decision(r) == "key-reassigned"
+        assert world.reg.audit(1)[0]["decision"] == "key-reassigned"
 
     def test_another_persons_org_is_refused(self, world):
         r = search(world, key=ALICE_KEY, org="E67890")
@@ -249,6 +254,54 @@ class TestAppKey:
         r = search(world, key=APP_KEY, user_token=bad(), user="E12345", org="E12345")
         assert r.status_code == 401 and decision(r) == "refused"
         assert world.core == []
+
+
+class TestAppKeyOwner:
+    """A frontend key must still belong to its service user in LiteLLM."""
+
+    def test_right_service_owner_is_served(self, world):
+        r = search(world, key=OWNED_APP_KEY, owner=APP_OWNER, user_token=token("alice@corp.example"),
+                   user="E12345", org="E12345")
+        assert r.status_code == 200
+
+    def test_owner_is_matched_without_regard_to_case(self, world):
+        r = search(world, key=OWNED_APP_KEY, owner=APP_OWNER.upper(),
+                   user_token=token("alice@corp.example"), user="E12345", org="E12345")
+        assert r.status_code == 200
+
+    def test_reassigned_to_a_person_is_refused(self, world):
+        # An admin pointed the Open WebUI key at Bob in LiteLLM: a valid token
+        # rides on a key that is no longer the app's.
+        r = search(world, key=OWNED_APP_KEY, owner="E67890", user_token=token("alice@corp.example"),
+                   user="E12345", org="E12345")
+        assert r.status_code == 403 and decision(r) == "key-reassigned"
+        assert world.core == []
+        last = world.reg.audit(1)[0]
+        assert last["decision"] == "key-reassigned" and last["key_label"] == "open-webui-owned"
+
+    def test_owner_removed_in_litellm_is_refused(self, world):
+        r = search(world, key=OWNED_APP_KEY, user_token=token("alice@corp.example"),
+                   user="E12345", org="E12345")
+        assert r.status_code == 403 and decision(r) == "key-reassigned"
+
+    def test_owner_appearing_on_an_ownerless_key_is_refused(self, world):
+        r = search(world, key=APP_KEY, owner="E67890", user_token=token("alice@corp.example"),
+                   user="E12345", org="E12345")
+        assert r.status_code == 403 and decision(r) == "key-reassigned"
+
+    def test_signed_only_stays(self, world):
+        # The right owner does not stand in for the token: no plain-header mode.
+        r = search(world, key=OWNED_APP_KEY, owner=APP_OWNER, user="E12345", org="E12345")
+        assert r.status_code == 401 and decision(r) == "refused"
+
+    def test_owner_can_be_recorded_later(self, world):
+        world.reg.set_app_owner(APP_KEY, "svc-two")
+        assert world.reg.app(sha256(APP_KEY)).owner == "svc-two"
+        assert world.reg.app_owners() == {APP_OWNER, "svc-two"}
+        r = search(world, **as_owui("alice@corp.example"))
+        assert r.status_code == 403 and decision(r) == "key-reassigned"
+        r = search(world, **as_owui("alice@corp.example"), owner="svc-two")
+        assert r.status_code == 200
 
 
 class TestNamespace:

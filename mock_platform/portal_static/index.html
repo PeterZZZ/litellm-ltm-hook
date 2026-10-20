@@ -669,7 +669,7 @@ async function loadTrust() {
       h("div", { class: "tbox" }, h("h4", {}, "LiteLLM deployments"),
         ...(t.services.length ? t.services.map(s => h("div", {}, s, h("small", {}, "service credential, stored as a hash"))) : [h("div", { class: "muted" }, "none")])),
       h("div", { class: "tbox" }, h("h4", {}, "Apps with signed tokens"),
-        ...(t.apps.length ? t.apps.map(a => h("div", {}, a.label, h("small", {}, `issuer ${a.issuer} · key ${a.key_hash}…`))) : [h("div", { class: "muted" }, "none")])),
+        ...(t.apps.length ? t.apps.map(a => h("div", {}, a.label, h("small", {}, `issuer ${a.issuer} · key ${a.key_hash}… · LiteLLM owner ${a.owner || "none"} (checked on every call)`))) : [h("div", { class: "muted" }, "none")])),
       h("div", { class: "tbox" }, h("h4", {}, "Corp SSO"),
         h("div", {}, h("span", { class: t.sso ? "pill ok" : "pill off" }, t.sso ? "connected" : "not configured")),
         h("small", {}, t.sso ? `${t.sso.issuer} · client ${t.sso.client} · ${t.sso.directory}` : "portal sign-in falls back to Open WebUI passwords")),

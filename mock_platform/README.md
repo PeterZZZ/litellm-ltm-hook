@@ -73,7 +73,8 @@ assumes.
 | Key not registered | 403 `X-MemMachine-Decision: not-enrolled` |
 | Personal key | the key's owner |
 | Personal key **and** a user token | 401: tokens are honoured only on their app's key |
-| Personal key naming someone else, or LiteLLM naming another owner | 403 |
+| Personal key naming someone else | 403 |
+| LiteLLM naming another owner for a personal key, or for an app key anyone but its service user | 403 `key-reassigned` |
 | Personal key switched off by its owner, or Open WebUI access switched off | 403 not-enrolled |
 | App key without a token | 401 |
 | App key, token fails signature / issuer / expiry / has no email | 401 |
@@ -115,13 +116,16 @@ $A service add litellm-prod                     # prints the service credential 
 $A user add alice@corp.example --employee-id E12345
 $A key personal alice@corp.example --key-env ALICE_VIRTUAL_KEY --label alice-personal
 $A key app --key-env OPENWEBUI_APP_KEY --label open-webui-app \
-           --secret-env FORWARD_USER_INFO_HEADER_JWT_SECRET
+           --secret-env FORWARD_USER_INFO_HEADER_JWT_SECRET --owner open-webui
 $A user disable alice@corp.example              # memory off for alice, chat unaffected
 $A show
 ```
 
 Keys and secrets are read from environment variables, never from arguments.
-A key may be given raw or as LiteLLM's SHA-256.
+A key may be given raw or as LiteLLM's SHA-256. `--owner` is the LiteLLM user
+the app key belongs to (a service user such as `open-webui`, never a person);
+every call on that key must still name it in `X-MemMachine-Key-Owner`, so an
+admin reassigning the key to a person in LiteLLM is noticed, not trusted.
 
 ## Corp SSO (mock Keycloak)
 

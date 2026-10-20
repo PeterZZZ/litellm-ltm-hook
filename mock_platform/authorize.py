@@ -26,7 +26,10 @@ Rules, in order. Each refusal names the step that failed.
 4. A personal key is its owner. An assertion beside it is refused (tokens are
    honoured only on the app key they were issued for), and so is naming
    anyone else as the user or the key's owner.                  401 / 403
-5. A frontend (app) key names nobody: the assertion is required and verified
+5. A frontend (app) key must still belong to its service user in LiteLLM:
+   X-MemMachine-Key-Owner must be the owner recorded for it, as it must for a
+   personal key. Otherwise the key was reassigned.        403 key-reassigned
+   An app key names nobody: the assertion is required and verified
    here with that app's own secret and issuer.                      401
    The person is the token's email, which must be enrolled.     not enrolled
    The hook must name that person in X-MemMachine-User, with a value the token
@@ -38,7 +41,9 @@ Rules, in order. Each refusal names the step that failed.
 
 "Not enrolled" is 403 with `X-MemMachine-Decision: not-enrolled`. The hook treats
 that one answer as "memory is off for this person" and carries on without
-memory; every other 401/403 is a refusal it passes to the caller.
+memory; every other 401/403 is a refusal it passes to the caller. The decision
+header names the step for the audit: `refused`, `key-reassigned` (LiteLLM's
+owner for the key is no longer the one the platform linked it to).
 """
 from __future__ import annotations
 
@@ -63,6 +68,8 @@ NOT_ENROLLED = "not-enrolled"
 # A path or method the platform does not serve: 403, never 404, so a caller
 # cannot tell a hidden endpoint from a forbidden one.
 ENDPOINT_NOT_ALLOWED = "endpoint-not-allowed"
+# LiteLLM's owner for the key is not the one the platform linked it to.
+KEY_REASSIGNED = "key-reassigned"
 
 # Clock difference allowed between Open WebUI, which stamps the token, and here.
 LEEWAY_SECONDS = 30
@@ -129,18 +136,22 @@ def authorize(registry: Registry, headers, now: Optional[float] = None,
             raise Denied(403, "a personal key acts only as its owner", **ctx)
         owner = (headers.get(KEY_OWNER_HEADER) or "").strip()
         if owner and not _same(owner, user.person_id):
-            raise Denied(403, "LiteLLM names a different owner for this key", **ctx)
+            raise Denied(403, "LiteLLM names a different owner for this key", KEY_REASSIGNED, **ctx)
         if not key.enabled:
             raise Denied(403, "key switched off by its owner", NOT_ENROLLED, **ctx)
         via = "personal-key"
     else:
         # 5. The key is an application; the signed token is the person.
         ctx["via"] = "app-token"
-        if not token:
-            raise Denied(401, "app key without a user token", **ctx)
         app = registry.app(key.key_hash)
         if app is None:
             raise Denied(401, "app key has no token configuration", **ctx)
+        owner = (headers.get(KEY_OWNER_HEADER) or "").strip()
+        if not _same(owner, app.owner or ""):
+            raise Denied(403, f"LiteLLM names {owner or 'no one'!r} as this app key's owner, "
+                              f"not its service user", KEY_REASSIGNED, **ctx)
+        if not token:
+            raise Denied(401, "app key without a user token", **ctx)
         claims = _verify_token(token, app.jwt_secret, app.issuer, _judge_at(headers, now), ctx)
         ctx["email"] = claims["email"]
         user = registry.user_by_email(claims["email"])

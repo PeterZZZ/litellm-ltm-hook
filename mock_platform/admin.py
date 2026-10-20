@@ -7,7 +7,8 @@
     python -m mock_platform.admin --db reg.sqlite user add alice@corp.example
     python -m mock_platform.admin --db reg.sqlite user role admin@corp.example admin
     python -m mock_platform.admin --db reg.sqlite key personal alice@corp.example --key-env ALICE_VIRTUAL_KEY --label alice-personal
-    python -m mock_platform.admin --db reg.sqlite key app --key-env OPENWEBUI_APP_KEY --label open-webui-app --secret-env FORWARD_USER_INFO_HEADER_JWT_SECRET
+    python -m mock_platform.admin --db reg.sqlite key app --key-env OPENWEBUI_APP_KEY --label open-webui-app --secret-env FORWARD_USER_INFO_HEADER_JWT_SECRET --owner open-webui
+    python -m mock_platform.admin --db reg.sqlite key owner --key-env OPENWEBUI_APP_KEY --owner open-webui
     python -m mock_platform.admin --db reg.sqlite user disable alice@corp.example
     python -m mock_platform.admin --db reg.sqlite show
 
@@ -63,6 +64,11 @@ def main(argv=None) -> None:
     k_app.add_argument("--label", required=True)
     k_app.add_argument("--secret-env", required=True, help="the app's token signing secret")
     k_app.add_argument("--issuer", default="open-webui")
+    k_app.add_argument("--owner", help="the LiteLLM service user that owns the key "
+                                      "(its user_id); leave out if the key has no owner")
+    k_owner = key.add_parser("owner", help="record which LiteLLM service user owns an app key")
+    k_owner.add_argument("--key-env", required=True)
+    k_owner.add_argument("--owner", required=True)
     k_rm = key.add_parser("remove")
     k_rm.add_argument("--key-env", required=True)
 
@@ -84,8 +90,12 @@ def main(argv=None) -> None:
         k = reg.link_personal_key(a.email, _env(a.key_env), a.label)
         print(f"{k.label}: personal key of {k.user_id} ({k.key_hash[:12]}…)")
     elif a.cmd == "key" and a.action == "app":
-        k = reg.add_app_key(_env(a.key_env), a.label, _env(a.secret_env), a.issuer)
-        print(f"{k.label}: app key ({k.key_hash[:12]}…), tokens from issuer {a.issuer!r}")
+        k = reg.add_app_key(_env(a.key_env), a.label, _env(a.secret_env), a.issuer, a.owner)
+        print(f"{k.label}: app key ({k.key_hash[:12]}…), tokens from issuer {a.issuer!r}, "
+              f"owned in LiteLLM by {a.owner or 'no one'}")
+    elif a.cmd == "key" and a.action == "owner":
+        app = reg.set_app_owner(_env(a.key_env), a.owner)
+        print(f"app key {app.key_hash[:12]}… is owned in LiteLLM by {app.owner}")
     elif a.cmd == "key" and a.action == "remove":
         reg.unlink_key(_env(a.key_env))
         print("removed")

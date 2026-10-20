@@ -16,7 +16,9 @@ SQLite, five tables, nothing a real tenant control server would not also need:
               its owner and can be switched off by them. An *app* key (Open
               WebUI's shared key) names nobody, so a request on it must carry a
               signed user token instead.
-    apps      for each app key, how to verify the tokens that may ride on it.
+    apps      for each app key, how to verify the tokens that may ride on it,
+              and which LiteLLM service user owns the key: LiteLLM's owner must
+              still be that user on every call, as it must for personal keys.
     audit     every authorization decision, allowed or not, newest kept.
 
 A person is named by their employee ID, which is also their org; until one is
@@ -84,6 +86,7 @@ _MIGRATIONS = (
     ("users", "created_at", "REAL"),
     ("keys", "enabled", "INTEGER NOT NULL DEFAULT 1"),
     ("users", "employee_id", "TEXT"),
+    ("apps", "owner", "TEXT"),
 )
 AUDIT_KEEP = 5000
 ROLES = ("user", "admin")
@@ -148,6 +151,9 @@ class App:
     key_hash: str
     jwt_secret: str
     issuer: str
+    # LiteLLM's user_id for the key: a service user, never a person. None when
+    # the key has no owner in LiteLLM; an owner appearing later is a reassignment.
+    owner: Optional[str] = None
 
 
 class Registry:
@@ -207,8 +213,13 @@ class Registry:
 
     def app_keys(self) -> list[dict]:
         return [dict(r) for r in self._db.execute(
-            "SELECT k.label, a.issuer, substr(k.key_hash, 1, 12) AS key_hash "
+            "SELECT k.label, a.issuer, a.owner, substr(k.key_hash, 1, 12) AS key_hash "
             "FROM keys k JOIN apps a ON a.key_hash = k.key_hash ORDER BY k.label")]
+
+    def app_owners(self) -> set[str]:
+        """LiteLLM users that own app keys: service users, never a person."""
+        return {r["owner"].lower() for r in self._db.execute(
+            "SELECT owner FROM apps WHERE owner IS NOT NULL AND owner != ''")}
 
     def app_labels(self) -> list[str]:
         return [a["label"] for a in self.app_keys()]
@@ -323,7 +334,8 @@ class Registry:
             )
         return self.key(h)
 
-    def add_app_key(self, raw_or_hash: str, label: str, jwt_secret: str, issuer: str) -> Key:
+    def add_app_key(self, raw_or_hash: str, label: str, jwt_secret: str, issuer: str,
+                    owner: Optional[str] = None) -> Key:
         h = key_hash(raw_or_hash)
         with self._db:
             self._db.execute(
@@ -331,10 +343,20 @@ class Registry:
                 (h, label),
             )
             self._db.execute(
-                "INSERT INTO apps (key_hash, jwt_secret, issuer) VALUES (?, ?, ?)",
-                (h, jwt_secret, issuer),
+                "INSERT INTO apps (key_hash, jwt_secret, issuer, owner) VALUES (?, ?, ?, ?)",
+                (h, jwt_secret, issuer, (owner or "").strip() or None),
             )
         return self.key(h)
+
+    def set_app_owner(self, raw_or_hash: str, owner: Optional[str]) -> App:
+        """Record which LiteLLM service user owns an app key."""
+        h = key_hash(raw_or_hash)
+        with self._db:
+            cur = self._db.execute("UPDATE apps SET owner = ? WHERE key_hash = ?",
+                                   ((owner or "").strip() or None, h))
+        if cur.rowcount != 1:
+            raise KeyError(h)
+        return self.app(h)
 
     def unlink_key(self, raw_or_hash: str) -> None:
         h = key_hash(raw_or_hash)
