@@ -239,7 +239,7 @@ MEMMACHINE_LIVE=0 uv run --group platform pytest -q \
   test_hook.py test_identity.py test_platform.py test_platform_mode.py test_portal.py test_sso.py test_linking.py
 ```
 
-Last tested at commit `e599e23` (row 3: automatic key linking with reconcile)
+Last tested at commit `fd9d1eb` (rows 7, 9, 2, 3 plus the portal fixes that followed)
 on branch `feat/mock-platform`; the shared VM should run that or later.
 
 To use it from a laptop, forward every port the browser touches; Keycloak's
