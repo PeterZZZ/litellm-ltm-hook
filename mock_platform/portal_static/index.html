@@ -480,10 +480,13 @@ const swBtn = (on, onclick, label) => h("button", { class: "sw" + (on ? " on" : 
 function result(d) {
   if (d.decision === "allow") return h("span", { class: "pill ok" }, "allowed");
   if (d.decision === "not-enrolled") return h("span", { class: "pill off" }, "no memory");
-  return h("span", { class: "pill bad" }, `refused ${d.status || ""}`.trim());
+  // refused, project-not-granted, key-reassigned, endpoint-not-allowed: the step that failed
+  const name = d.decision === "refused" ? "refused" : `refused · ${d.decision}`;
+  return h("span", { class: "pill bad", title: `X-MemMachine-Decision: ${d.decision}` }, `${name} ${d.status || ""}`.trim());
 }
+const refusedOp = d => d.decision !== "allow" && d.decision !== "not-enrolled" && !(d.op || "").startsWith("admin:");
 function action(op) {
-  return { search: "recall", store: "save" }[op] || (op || "").replace("admin:", "admin · ");
+  return { search: "recall", store: "save", list: "list", link: "link key", reconcile: "reconcile" }[op] || (op || "").replace("admin:", "admin · ");
 }
 function wayIn(d) {
   if (d.via === "app-token") return "Open WebUI";
@@ -500,7 +503,7 @@ function show(view) {
   $("#who").classList.toggle("hidden", view === "login" || view === "loading");
 }
 
-const UI_VERSION = "2026-10-20.1";
+const UI_VERSION = "2026-10-20.2";
 async function showLogin() {
   let cfg = { sso: false, password: true };
   try { cfg = await (await fetch("/portal/api/config")).json(); } catch {}
@@ -698,10 +701,11 @@ async function loadAudit() {
   catch (e) { $("#audit-rows").replaceChildren(h("tr", {}, h("td", { colspan: 6 }, e.message))); }
 }
 function renderAudit() {
-  const match = d => S.achip === "all" ? true : S.achip === "admin" ? (d.op || "").startsWith("admin:") : d.decision === S.achip && !(d.op || "").startsWith("admin:");
+  const chipFn = id => id === "all" ? () => true : id === "admin" ? d => (d.op || "").startsWith("admin:") : id === "refused" ? refusedOp : d => d.decision === id && !(d.op || "").startsWith("admin:");
+  const match = chipFn(S.achip);
   const chips = $("#audit-chips"); chips.replaceChildren();
   for (const [id, label] of ACHIPS) {
-    const fn = id === "all" ? () => true : id === "admin" ? d => (d.op || "").startsWith("admin:") : d => d.decision === id && !(d.op || "").startsWith("admin:");
+    const fn = chipFn(id);
     chips.append(h("button", { class: "chip" + (S.achip === id ? " on" : ""), onclick: () => { S.achip = id; renderAudit(); } }, label, h("span", { class: "n" }, S.audit.filter(fn).length)));
   }
   const q = $("#audit-q").value.trim().toLowerCase();
