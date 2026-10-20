@@ -45,8 +45,9 @@ Rules, in order. Each refusal names the step that failed.
    the namespace passed to core is <org>/<project>.    403 project-not-granted
 
 "Not enrolled" is 403 with `X-MemMachine-Decision: not-enrolled`. The hook treats
-that one answer as "memory is off for this person" and carries on without
-memory; every other 401/403 is a refusal it passes to the caller. The decision
+that one answer as "memory is off for this person"; every other 401/403 is a
+refusal. Either way the chat goes on without memory: a refused store is dropped
+(403) or kept for replay (401), never shown to the user. The decision
 header names the step for the audit: `refused`, `key-reassigned` (LiteLLM's
 owner for the key is no longer the one the platform linked it to),
 `project-not-granted` (the person exists but may not use that project).

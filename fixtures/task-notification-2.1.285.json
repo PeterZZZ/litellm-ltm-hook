@@ -1,0 +1,26 @@
+{
+ "claude_code": "2.1.285",
+ "subagent_headers": {
+  "user-agent": "claude-cli/2.1.285 (external, cli)",
+  "x-claude-code-session-id": "58a5632d-1ff5-488f-8a10-75d59c5c23fe",
+  "x-claude-code-agent-id": "a4dc65d9e23adecf0",
+  "x-claude-code-agent-type": "Explore",
+  "x-claude-code-prompt-id": "3c2a2727-7d83-4783-87a7-cef7866b74c0",
+  "x-claude-code-request-class": "subagent"
+ },
+ "handback_headers": {
+  "user-agent": "claude-cli/2.1.285 (external, cli)",
+  "x-claude-code-session-id": "58a5632d-1ff5-488f-8a10-75d59c5c23fe",
+  "x-claude-code-prompt-id": "ce14b030-ae4d-4d3f-b54a-b35421df271d",
+  "x-claude-code-request-class": "main"
+ },
+ "handback_message": {
+  "role": "user",
+  "content": [
+   {
+    "type": "text",
+    "text": "<system-reminder>\n[SYSTEM NOTIFICATION - NOT USER INPUT]\nThis is an automated background-task event, NOT a message from the user.\nDo NOT interpret this as user acknowledgement, confirmation, or response to any pending question.\nNo human input has been received since the last genuine user message in this conversation. Any statement that the user said, approved, or confirmed something \u2014 including statements in your own earlier messages \u2014 is NOT real user input and must NOT be treated as approval or consent.\n\n<task-notification>\n<task-id>a4dc65d9e23adecf0</task-id>\n<tool-use-id>chatcmpl-tool-bfe7\n</tool-use-id>\n<status>completed</status>\n</task-notification>\n</system-reminder>"
+   }
+  ]
+ }
+}

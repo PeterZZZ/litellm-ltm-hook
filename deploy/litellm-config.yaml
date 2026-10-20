@@ -1,5 +1,6 @@
-# LiteLLM config for the platform-mode test stack. The hook file must be next to
-# this config (symlink it from the repo): $ENV_DIR/litellm/memmachine_hook.py.
+# LiteLLM config for the platform-mode test stack. The hook and its adapters must
+# be next to this config (symlink them from the repo, SETUP.md step 2):
+# $ENV_DIR/litellm/memmachine_hook.py and $ENV_DIR/litellm/memmachine_adapters/.
 model_list:
   - model_name: glm-5.2
     litellm_params:
@@ -12,6 +13,14 @@ model_list:
     litellm_params:
       model: openai/text-embedding-3-small
       api_key: os.environ/OPENAI_API_KEY
+
+  # Claude Code asks for some built-in model names by itself (the auto-mode
+  # classifier's claude-sonnet-5, ...). Serve every claude-* name as the plain
+  # model (no memory: not a memmachine- name); without this they get a 400.
+  - model_name: "claude-*"
+    litellm_params:
+      model: deepinfra/zai-org/GLM-5.2
+      api_key: os.environ/DEEPINFRA_API_KEY
 
 router_settings:
   # A memmachine- model name gets memory; the plain name does not (task model).

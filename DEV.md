@@ -2,6 +2,8 @@
 
 These notes cover the current MemMachine hook in `litellm-ltm-hook`. They document details discovered during real-deployment debugging; future hooks may have different behavior and constraints. README points here instead of reproducing the content.
 
+The hook is a core (`memmachine_hook.py`) plus adapters (`memmachine_adapters/`). Sections 1, 5, 6 and 8 describe the Open WebUI adapter (`openwebui.py`, one request = one turn, every client but Claude Code); Claude Code's adapter (`claude_code.py`) has its own turn model, described in its docstring and the core's. LiteLLM loads the hook by file path without registering the module, so the core registers a stand-in for itself before importing the adapters (`default_adapters()`); without it they would load a second copy.
+
 ## 1. Reasoning models return `content=null`
 
 Backend models like Qwen3.5-122B and Kimi-K3 are reasoning models. With a small `max_tokens`, the response's `choices[0].message.content` is `null` and the answer is in `reasoning_content`. The hook falls back to `reasoning_content` / `reasoning` when `content` is empty:
@@ -24,11 +26,7 @@ LiteLLM's router resolves `model_group_alias` **between** the pre-call hook and 
 | `async_pre_call_hook` | original requested name | `memmachine-llm-medium` |
 | `async_log_success_event` | resolved backend name | `Qwen/Qwen3.5-122B-A10B-FP8` |
 
-The prefix check in `_in_scope()` must use the **original** name or the store path would be silently skipped. The original name is preserved in `metadata.model_group`:
-
-```python
-model_name = data.get("model_group") or data.get("model") or kwargs.get("model")
-```
+The prefix check (`_in_scope()`) runs in the pre-call hook, on the original name; a turn that starts there is stored whatever the store event's `model` says. Where the requested name is needed after the call, it is in `metadata.model_group` (`request_model()`).
 
 ## 3. Store hook gets auth info as flattened fields, not an object
 
@@ -41,14 +39,7 @@ metadata keys: [..., 'user_api_key_user_id', ..., 'user_api_key_user_email',
               'user_api_key_hash', ...]
 ```
 
-`_identity()` accepts the same authenticated email in either shape:
-
-```python
-getattr(user_api_key_dict, "user_email", None)  # pre-call path
-metadata.get("user_api_key_user_email")         # store path (flattened)
-```
-
-It deliberately ignores request headers/body metadata, virtual-key `user_id` as an identity source. Missing email raises instead of falling through to a shared `"default"` user. The email is slugified and that canonical value is used by `producer`, `produced_for`, and the default personal org.
+So identity is resolved once, in the pre-call hook, from `user_api_key_dict`, and kept with the turn until it is stored; the store event only finds the turn again (by the key's hash, `user_api_key_hash`, and LiteLLM's call id). In direct mode (`direct_identity()`) it deliberately ignores request headers/body metadata and the virtual-key `user_id` as identity sources. A missing email means no memory instead of falling through to a shared `"default"` user. The email is slugified and that canonical value is used by `producer`, `produced_for`, and the default personal org.
 
 ## 4. MemMachine API quirks (self-hosted, `/api/v2` prefix)
 
@@ -84,7 +75,7 @@ This means **every turn re-searches and re-injects** under normal multi-turn flo
 The Anthropic route (`call_type="anthropic_messages"`) needs two fallbacks beyond the OpenAI Chat route:
 
 - **Model name recovery**: `kwargs.litellm_params.metadata.model_group` is `None` on the Anthropic route. The original requested name lives in `litellm_params.litellm_metadata.model_group` (and also `litellm_params.proxy_server_request.body.model`). `async_log_success_event` checks them in that order before falling back to `kwargs.model` (the post-alias backend name).
-- **Auth fields**: `user_api_key_user_email` lives in `litellm_params.metadata` on the OpenAI route and in `litellm_params.litellm_metadata` on the Anthropic route. `_identity()` reads from `meta` = `{**litellm_metadata, **metadata}` so both routes work.
+- **Auth fields**: `user_api_key_user_email` lives in `litellm_params.metadata` on the OpenAI route and in `litellm_params.litellm_metadata` on the Anthropic route. `request_meta()` reads from `{**litellm_metadata, **metadata}` so both routes work (the store event finds its turn by `user_api_key_hash` there).
 
 ## 8. Where LiteLLM's OpenAI-type normalization falls short
 
@@ -116,20 +107,20 @@ Anthropic is a *different* protocol that LiteLLM actively translates to OpenAI s
 
 ## 9. Failure policy
 
-Search runs before the LLM call, so client/request errors can still be returned to the caller. Store runs in `async_log_success_event` after the LLM response and therefore cannot change that response.
+Memory never fails the user's request, for every adapter: the core catches every search failure and every hook bug, and the request goes to the model unchanged.
 
 | Failure | Search | Store |
 |---|---|---|
-| 400/401/403/422 and other non-404/408/429 4xx | Fail-closed with the same status and a sanitized message | Detect and log; fail-open |
-| 404 | Treat as an empty/new namespace; fail-open | Detect and log; fail-open |
-| 408 or client timeout | Treat as temporary unavailability; fail-open | Detect and log; fail-open |
-| 429 | Treat as temporary unavailability; fail-open | Detect and log; fail-open |
-| timeout/transport/5xx | Log and fail-open | Detect and log; fail-open |
-| malformed/unexpected response | Log and fail-open | Log and fail-open |
+| 401/403 (refused) | No memory for this prompt; logged once per key, project and status; not counted as an outage | 403: dropped (a later grant must not bring back what was said while refused). 401 (setup): kept in the dead-letter file for `replay` |
+| 403 + `X-MemMachine-Decision: not-enrolled` (platform) | No memory: memory is off for this person | Dropped |
+| 404 | An empty or new namespace: no memory, not an outage | Dead-lettered without retry |
+| other 4xx | No memory; counts toward the circuit breaker | Dead-lettered without retry (the same request would fail again) |
+| 408, 429, timeout, transport, 5xx | No memory; counts toward the circuit breaker (`MEMMACHINE_BREAKER_FAILURES` in a row skip searches for `MEMMACHINE_BREAKER_COOLDOWN`) | Retried with backoff (`MEMMACHINE_STORE_RETRIES`), then dead-lettered |
+| malformed/unexpected response | No memory; logged | Retried, then dead-lettered |
 
-LiteLLM 1.97.0 lets exceptions from `CustomLogger.async_pre_call_hook` propagate to its proxy request processor. That processor preserves the integer `status_code` attribute of a general exception when it constructs the OpenAI-compatible `ProxyException`. The hook therefore raises its dependency-free `MemMachineRequestError` for fail-closed search responses; importing FastAPI directly would break environments that install only LiteLLM core without proxy extras.
+The dead-letter file (`MEMMACHINE_DEAD_LETTER`, mode 0600) holds prompts and answers; `python memmachine_hook.py replay` stores them again (a 403, or a 401 for a frontend user whose signed token has expired, drops them). Stores held or in flight are also written to `<dead-letter>.pending`, so a restart does not lose them.
 
-Failure logs use the standard `memmachine_hook.errors` logger independently of `MEMMACHINE_DEBUG`. They contain only operation, category, status, org/project, request ID, and exception type; upstream response bodies, queries, authorization headers, and keys are not logged. Inline retries are intentionally omitted: search retries add user-facing latency, while reliable store retries need a future durable queue.
+Failure logs use the standard `memmachine_hook.errors` logger independently of `MEMMACHINE_DEBUG`. They contain only operation, category, status, org/project, request ID, and exception type; upstream response bodies, queries, authorization headers, and keys are not logged.
 
 ## 10. Planned identity/Authz integration (deferred)
 
@@ -145,10 +136,10 @@ Deferred design items:
 
 ## Known limitations
 
-- **Claude Code user-message wrappers** — when `MEMMACHINE_CLAUDE_CODE_STRIP_SYSTEM_TAGS=1` (the default), requests with a `User-Agent` beginning `claude-cli/` have complete, line-leading paired XML-like blocks removed from the text used for memory search and storage. This is intentionally tag-name agnostic so Claude Code can add wrapper names without requiring a hook update. It does not mutate the prompt sent to the LLM, and it cannot distinguish an unwrapped synthetic request (such as an automatic recap) from a real user request.
+- **Claude Code user-message wrappers** — Claude Code's requests go to its own adapter, which strips its wrapper blocks (`<system-reminder>` and the like) from the text used for memory search and storage, without changing the prompt sent to the LLM.
 - **Semantic memory availability** — semantic memory is currently `[]` on this deployment, so its enabled behavior is covered by mocked tests. The hook intentionally accepts MemMachine's default org-set + project-set search scope; enabling org-level categories may surface semantic features derived from other projects in the same org.
 - **Episodic recall includes every producer in the namespace** — user, collaborator, and assistant episodes in the selected org/project are all eligible. `producer_id` remains stored for provenance and explicit administrative queries.
 - **Org/project selectors are not authorized yet** — `x-memmachine-org` and `x-memmachine-project` are accepted directly for PoC use. Do not treat this as a production isolation boundary until the planned Authz gateway validates access.
 - **Store path is async** — `async_log_success_event` runs after the response completes. If the LLM call fails, nothing is stored (intentional).
-- **Store failures are fail-open** — the hook calls `raise_for_status()` and logs MemMachine 4xx/5xx responses through the standard error logger, but the exception is swallowed because the LLM response has already completed. Durable retry/alerting and optional Authz write preflight remain deferred above.
+- **Store failures never reach the user** — the LLM response has already completed; failed stores are retried and dead-lettered (section 9). Alerting and an Authz write preflight remain deferred above.
 - **Streaming** — `async_log_success_event` is still called after streaming finishes. The pre-call injection is unaffected by streaming.

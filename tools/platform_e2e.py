@@ -200,18 +200,18 @@ s, a = chat(LL, keys["CAROL_VIRTUAL_KEY"], QUESTION)
 check("carol's personal key (not registered): chat works, no memory", s == 200 and FACT not in a, a)
 
 s, a = chat(LL, keys["OPENWEBUI_APP_KEY"], QUESTION)
-check("app key with no user token: 401", s == 401, a)
+check("app key with no user token: chat works, no memory", s == 200 and FACT not in a, a)
 
 s, a = chat(LL, keys["OPENWEBUI_APP_KEY"], QUESTION,
             {"x-openwebui-user-jwt": mint("alice@corp.example", secret="forged-" + "x" * 40)})
-check("app key + forged token: 401", s == 401, a)
+check("app key + forged token: chat works, no memory", s == 200 and FACT not in a, a)
 
 s, a = chat(LL, keys["OPENWEBUI_APP_KEY"], QUESTION,
             {"x-openwebui-user-jwt": mint("alice@corp.example", ttl=-600)})
-check("app key + expired token: 401", s == 401, a)
+check("app key + expired token: chat works, no memory", s == 200 and FACT not in a, a)
 
 s, a = chat(LL, keys["BOB_VIRTUAL_KEY"], QUESTION, {"x-openwebui-user-jwt": mint("alice@corp.example")})
-check("alice's valid token replayed on bob's key: 401", s == 401, a)
+check("alice's valid token replayed on bob's key: chat works, no memory", s == 200 and FACT not in a, a)
 
 s, a = chat(LL, keys["ALICE_VIRTUAL_KEY"], QUESTION, {"x-memmachine-org": "E67890"})
 check("alice's key + x-memmachine-org: E67890 (bob) -> header ignored, still alice", s == 200 and FACT in a, a)
@@ -221,10 +221,11 @@ check("platform called directly with a guessed service credential: 401", s == 40
 
 # Alice edits her Open WebUI display name to Bob's employee ID. Open WebUI signs
 # whatever name she has, so the token is valid; the platform knows E67890 is not
-# the person behind alice@corp.example and refuses.
+# the person behind alice@corp.example and refuses. The hook never fails a chat
+# over memory: it goes on without any.
 post(f"{OWUI}/api/v1/auths/update/profile", {"name": "E67890", "profile_image_url": "/user.png"}, alice)
 s, a = chat(OW, alice, QUESTION)
-check("alice renamed to bob's employee ID: refused", s != 200 and FACT not in a, f"{s} {a}")
+check("alice renamed to bob's employee ID: chat works, no memory", s == 200 and FACT not in a, f"{s} {a}")
 alice = owui_login("alice@corp.example")  # signing in again restores the name from SSO
 check("signing in again restores her name from Corp SSO", owui_me(alice)["name"] == "E12345",
       owui_me(alice)["name"])
@@ -297,8 +298,10 @@ if os.environ.get("PLATFORM_DB"):
     check("same project after ungrant: 403 project-not-granted",
           s == 403 and d == "project-not-granted", f"{s} {d} {body}")
     s, a = chat(LL, keys["ALICE_VIRTUAL_KEY"], QUESTION, {"x-memmachine-project": "payroll"})
-    check("alice's key via LiteLLM on ungranted project payroll: the hook refuses the chat",
-          s != 200 and FACT not in a, f"{s} {a}")
+    # The hook never fails a chat over memory: the platform refuses, the chat goes on without any.
+    check("alice's key via LiteLLM on ungranted project payroll: chat works, no memory (project-not-granted)",
+          s == 200 and FACT not in a
+          and any(r["decision"] == "project-not-granted" for r in reg.audit(20)), f"{s} {a}")
     reg.grant("bob@corp.example", "*")
     try:
         s, d, body = platform("/api/v2/memories/list", {"org_id": "E67890", "project_id": f"any-{RUN}"},
@@ -366,8 +369,9 @@ if os.environ.get("PLATFORM_DB"):
 
         litellm_admin("/key/update", {"key": rotated, "user_id": "E67890"})
         s, a = chat(LL, rotated, QUESTION)
-        check("alice's linked key reassigned to bob in LiteLLM: the next call is refused (key-reassigned)",
-              s != 200 and FACT not in a, f"{s} {a}")
+        check("alice's linked key reassigned to bob in LiteLLM: chat works, no memory (key-reassigned)",
+              s == 200 and FACT not in a
+              and any(r["decision"] == "key-reassigned" for r in reg.audit(20)), f"{s} {a}")
         r = admin_portal("/portal/api/admin/reconcile", {})
         s, d, body = platform("/api/v2/memories/search", {**SEARCH, "org_id": "E67890"}, project="default",
                               key=rotated, owner="E67890")

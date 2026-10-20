@@ -100,11 +100,14 @@ curl -sSL https://github.com/qdrant/qdrant/releases/download/v1.19.0/qdrant-x86_
 ./qdrant --version
 ```
 
-The hook runs inside LiteLLM: link it next to LiteLLM's config so a `git pull`
-plus a restart picks up changes.
+The hook runs inside LiteLLM: link it and its adapters next to LiteLLM's config
+so a `git pull` plus a restart picks up changes. Undelivered stores go to
+`dead-letter.jsonl` next to the hook's real file (the repo; git ignores it), or
+to `MEMMACHINE_DEAD_LETTER`.
 
 ```bash
 ln -s $ENV_DIR/repo/memmachine_hook.py $ENV_DIR/litellm/memmachine_hook.py
+ln -s $ENV_DIR/repo/memmachine_adapters $ENV_DIR/litellm/memmachine_adapters
 cp $ENV_DIR/repo/deploy/litellm-config.yaml $ENV_DIR/litellm/config.yaml
 ```
 
@@ -296,7 +299,53 @@ curl -s http://127.0.0.1:8087/api/config | python3 -c 'import json,sys; d=json.l
 Sign in through "Corp SSO" as `admin@corp.example` first: Open WebUI's first
 user becomes its admin.
 
-## 11. Verify
+Open WebUI names itself to the hook with a header on its LiteLLM connection,
+`x-memmachine-client: openwebui` (`OPENAI_API_CONFIGS` in
+`openwebui-connection.env`, which seeds a fresh install). On an install that
+already ran, add it in Admin Settings > Connections > the LiteLLM connection >
+Headers: `{"x-memmachine-client": "openwebui"}`. Without it the hook still
+recognises Open WebUI's requests, and labels them `other` when they carry no
+signed user token.
+
+## 11. Claude Code
+
+Claude Code reaches LiteLLM with the person's own key (Alice's from step 8,
+linked by the platform on its first use, step 9); the hook's Claude Code adapter handles it. Print the
+settings for that key and put them in the person's `~/.claude/settings.json`
+(merge with what is there; `chmod 600` it):
+
+```bash
+grep ^ALICE_VIRTUAL_KEY= $ENV_DIR/keys.env | cut -d= -f2- \
+  | LITELLM_ENV=$ENV_DIR/litellm.env $ENV_DIR/repo/tools/litellm-admin.sh settings
+```
+
+A new person in one go (LiteLLM user + key + this block):
+`tools/litellm-admin.sh add-user E12345 alice@corp.example`; the platform must
+know the person before it gives memory (step 9); the key links itself.
+
+What matters in the block:
+
+- `CLAUDE_CODE_GATEWAY_HINT_HEADERS=1`: Claude Code then sends its request
+  class, session and prompt ids, which the adapter's turn model is built on.
+  **Without it every prompt silently gets no memory.**
+- `ANTHROPIC_MODEL=memmachine-glm-5.2`: only `memmachine-` models get memory;
+  `ANTHROPIC_DEFAULT_HAIKU_MODEL` is the plain model, for Claude Code's
+  background requests.
+- `ANTHROPIC_CUSTOM_HEADERS`: two headers, one per line.
+  `x-memmachine-project: default` is the project (a repo can name its own in
+  its `.claude/settings.json`; the platform decides whether the person may use
+  it). `x-memmachine-client: claude-code` names the frontend, so the hook uses
+  its Claude Code adapter and the platform's audit says `claude-code`.
+- `autoMemoryEnabled: false`: Claude Code's own memory files stay out of the
+  way; `CLAUDE_CODE_MAX_CONTEXT_TOKENS` leaves room for the memory block.
+
+`ANTHROPIC_BASE_URL` is `http://127.0.0.1:4011`: run Claude Code on this host,
+or forward 4011 (the `ssh -L` line in step 12). Try it in an empty folder, so it
+cannot answer from files: tell it a fact, start a new session, ask for it. The
+same fact is then also recalled in Open WebUI as Alice (stores land some
+seconds after the answer; wait ~30 s before asking elsewhere).
+
+## 12. Verify
 
 ```bash
 cd $ENV_DIR/repo
@@ -313,8 +362,7 @@ and reconcile; the script makes and removes a few throwaway LiteLLM keys with
 the master key). Unit tests, no network:
 
 ```bash
-MEMMACHINE_LIVE=0 uv run --group platform pytest -q \
-  test_hook.py test_identity.py test_platform.py test_platform_mode.py test_portal.py test_sso.py test_linking.py
+uv run --group platform pytest -q test_hook.py test_platform.py test_portal.py test_sso.py test_linking.py
 ```
 
 Last tested at commit `fd9d1eb` (rows 7, 9, 2, 3 plus the portal fixes that followed)
@@ -336,6 +384,8 @@ LiteLLM's own dashboard is at `http://127.0.0.1:4011/ui` (user `admin`, password
 | Symptom | Cause | Fix |
 |---|---|---|
 | Open WebUI still shows the password form | `ENABLE_LOGIN_FORM`, `DEFAULT_USER_ROLE`, task model and similar settings only seed Open WebUI's stored config on its **first** start | On an existing install, change them in Admin Settings, or stop Open WebUI and update the `config` table row (e.g. `ui.enable_login_form` → `false`) |
+| Claude Code gets no memory, and the gateway logs no `MemMachine trace` lines for it | Claude Code sends no hint headers | `CLAUDE_CODE_GATEWAY_HINT_HEADERS=1` in its settings (step 11) |
+| The gateway logs 400s for `claude-…` models nobody configured | Claude Code asks for some built-in model names by itself (the auto-mode classifier's `claude-sonnet-5`, …) | The `claude-*` entry in `deploy/litellm-config.yaml` serves them as the plain model |
 | Users see "Model not found" | Models from a connection are admin-only by default | `BYPASS_MODEL_ACCESS_CONTROL=true`, or grant read on each model to users |
 | New SSO users cannot chat | `DEFAULT_USER_ROLE` defaults to `pending` | `DEFAULT_USER_ROLE=user` before first start, or approve them as admin |
 | Chat titles and tags show up as memories | Open WebUI's background tasks used a `memmachine-` model | Point the task model at the plain model (`TASK_MODEL_EXTERNAL=glm-5.2`) |

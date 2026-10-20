@@ -97,14 +97,17 @@ endpoint from a forbidden one. The portal has its own path to core for a
 person's own deletes.
 
 The hook treats **not-enrolled** as "memory is off for this person": the chat
-goes on without memory and nothing is stored. Every other 401/403 reaches the
-caller: a bad identity stops the chat. If the platform is down, the chat goes
-on without memory.
+goes on without memory and nothing is stored. Any other refusal is no memory
+too, never a failed chat: on search, nothing is injected; a store refused with
+403 is dropped, one refused with 401 (a setup problem) is kept in the hook's
+dead-letter file for replay. If the platform is down, the chat goes on without
+memory and stores are retried.
 
 On store, the token is judged at the time the request started (the hook sends
 `X-MemMachine-Request-Started`, accepted up to 15 minutes back), so a
 short-lived token that expires while the model answers still lets the turn be
-stored. Refused stores are not replayed later.
+stored. A kept store whose token has expired by the time it is replayed is
+dropped.
 
 ## Registry
 
