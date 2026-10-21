@@ -285,6 +285,10 @@ dialog::backdrop{background:rgba(10,10,20,.45)}
           <thead><tr><th>Namespace</th><th>Type</th><th>Memory</th><th>Stored</th><th style="text-align:right">Data</th></tr></thead>
           <tbody id="ns-rows"></tbody>
         </table></div>
+        <form class="create" id="project-form" style="margin-top:10px">
+          <div><label class="f" for="new-project">New project in your org</label><input class="t" id="new-project" placeholder="research" pattern="[A-Za-z0-9_:\-]+" title="letters, digits, _ - and :" required></div>
+          <button class="btn" type="submit">Add project</button>
+        </form>
         <div class="note" id="grants-note"></div>
       </div>
 
@@ -503,7 +507,7 @@ function show(view) {
   $("#who").classList.toggle("hidden", view === "login" || view === "loading");
 }
 
-const UI_VERSION = "2026-10-20.4";
+const UI_VERSION = "2026-10-21.1";
 async function showLogin() {
   let cfg = { sso: false, password: true };
   try { cfg = await (await fetch("/portal/api/config")).json(); } catch {}
@@ -556,12 +560,13 @@ function renderAccess() {
       h("td", {}, `${ns.episodes} messages`),
       h("td", {}, h("div", { class: "row-acts" },
         h("a", { class: "btn sm", href: `/portal/api/export?project=${encodeURIComponent(ns.project_id)}`, download: true }, "Export"),
-        h("button", { class: "btn sm danger", onclick: () => openClear(ns.episodes, ns.project_id) }, "Delete all")))));
+        h("button", { class: "btn sm danger", onclick: () => openClear(ns.episodes, ns.project_id) }, "Delete all"),
+        ns.project_id === m.namespaces[0].project_id ? null : h("button", { class: "btn sm", title: "Take this project off your grants; its memories stay in core", onclick: () => removeProject(ns.project_id) }, "Remove")))));
   }
   const g = m.grants || [];
   $("#grants-note").replaceChildren(
     "Projects you may use in your org: ", ...(g.includes("*") ? [h("code", {}, "any")] : g.flatMap((p, i) => [i ? ", " : "", h("code", {}, p)])),
-    ". A client names the project; the platform checks the grant. The Memories and recall tabs show your default project.");
+    ". A client names the project (Claude Code per repository, Open WebUI through its connection headers); the platform checks the grant. The Memories and recall tabs show your default project. Removing a project keeps its memories in core.");
   const ways = $("#ways"); ways.replaceChildren();
   if (!m.access.length) ways.append(h("p", { class: "muted" }, "Nothing can reach your memory yet."));
   for (const a of m.access) {
@@ -576,6 +581,16 @@ function renderAccess() {
       swBtn(a.enabled, () => toggleWay(a), `Allow ${a.label}`)));
   }
 }
+async function removeProject(project) {
+  try { await api("/portal/api/projects/remove", { body: { project } }); toast(`Removed ${project} from your projects`); await refreshMe(); }
+  catch (e) { toast(e.message); }
+}
+$("#project-form").addEventListener("submit", async e => {
+  e.preventDefault();
+  const project = $("#new-project").value.trim();
+  try { await api("/portal/api/projects", { body: { project } }); $("#new-project").value = ""; toast(`Added ${project}: name it as x-memmachine-project to use it`); await refreshMe(); }
+  catch (err) { toast(err.message); }
+});
 async function toggleMemory(on) {
   try { await api("/portal/api/switch", { body: { enabled: on } }); S.me.namespaces[0].enabled = on; renderAccess(); toast(on ? "Memory on" : "Memory paused: chats keep working"); }
   catch (e) { toast(e.message); }
@@ -620,7 +635,11 @@ async function loadUsers() {
       rows.append(h("tr", {},
         h("td", {}, h("b", {}, u.email), self ? h("span", { class: "muted" }, "  (you)") : null,
           h("div", {}, h("span", { class: "muted" }, u.employee_id ? `${u.employee_id} · ` : "no employee ID · "), h("code", { class: "muted" }, u.org_id || u.namespace)),
-          h("div", { class: "muted", style: "font-size:12.5px" }, "projects: ", (u.grants || []).includes("*") ? "any" : (u.grants || []).join(", ") || "none")),
+          h("div", { style: "display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-top:4px" },
+            h("span", { class: "muted", style: "font-size:12.5px" }, "projects:"),
+            ...(u.grants || []).map(p => h("span", { class: "pill neutral", title: p === "*" ? "any project" : `${u.org_id}/${p}` }, p === "*" ? "any" : p,
+              p === "default" ? null : h("button", { class: "icon-btn", title: `Remove ${p}`, style: "padding:0 2px;line-height:1", onclick: () => adminGrant(u.email, p, true) }, "×"))),
+            h("button", { class: "btn sm", title: "Grant this person another project in their org (* = any)", onclick: () => { const p = prompt(`New project for ${u.email} (letters, digits, _ - :, or * for any):`); if (p) adminGrant(u.email, p.trim(), false); } }, "+ project"))),
         h("td", {}, h("span", { class: "role" + (u.role === "admin" ? " admin" : "") }, u.role)),
         h("td", {}, swBtn(u.enabled, () => adminUpdate(u.email, { enabled: !u.enabled }), `Memory for ${u.email}`)),
         h("td", {}, h("div", { style: "display:flex;gap:6px;flex-wrap:wrap" }, ways)),
@@ -631,6 +650,10 @@ async function loadUsers() {
           h("button", { class: "btn sm danger", disabled: self, onclick: () => openDelete(u.email) }, "Delete")))));
     }
   } catch (e) { rows.replaceChildren(h("tr", {}, h("td", { colspan: 6 }, e.message))); }
+}
+async function adminGrant(email, project, remove) {
+  try { await api("/portal/api/admin/users/grant", { body: { email, project, remove } }); toast(`${email}: ${remove ? "removed" : "granted"} ${project}`); loadUsers(); loadAudit(); if (email.toLowerCase() === S.me.email.toLowerCase()) refreshMe(); }
+  catch (e) { toast(e.message); }
 }
 async function adminUpdate(email, change) {
   try { await api("/portal/api/admin/users/update", { body: { email, ...change } }); toast(`${email} updated`); loadUsers(); loadAudit(); if (email === S.me.email) boot(); }

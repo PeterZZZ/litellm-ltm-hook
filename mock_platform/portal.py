@@ -49,7 +49,7 @@ from .registry import ANY_PROJECT, Registry, User, _ORG_ID_ALLOWED as _BAD_PROJE
 COOKIE = "mm_portal"
 # Bumped whenever the page and these routes change together. A tab still running
 # an older page sees a different value and reloads itself instead of breaking.
-UI_VERSION = "2026-10-20.4"
+UI_VERSION = "2026-10-21.1"
 SESSION_SECONDS = 8 * 60 * 60
 LOGIN_SECONDS = 10 * 60  # how long a sign-in may sit at Keycloak
 STATE_COOKIE = "mm_portal_login"
@@ -418,6 +418,43 @@ def mount_portal(
         registry.set_enabled(user.email, bool(body.get("enabled")))
         return {"enabled": bool(body.get("enabled"))}
 
+    def change_grant(user: User, project: str, add: bool, *, by: User, allow_any: bool) -> User:
+        """Add or remove a project in `user`'s org. The default project stays:
+        the portal's memory views live there. `*` is an admin's to give."""
+        project = project.strip()
+        if not project:
+            raise HTTPException(400, "name the project")
+        if project == user.project_id:
+            raise HTTPException(400, "the default project stays")
+        if project == ANY_PROJECT and not allow_any:
+            raise HTTPException(400, "only an admin can grant any project")
+        try:
+            user = registry.grant(user.email, project) if add else registry.ungrant(user.email, project)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from None
+        who = "self" if by.user_id == user.user_id else by.email
+        registry.record(op="admin:grant" if by.is_admin and who != "self" else "project:" + ("add" if add else "remove"),
+                        decision="allow", status=200, email=user.email,
+                        reason=f"by {who}; project {project} {'granted' if add else 'removed'}",
+                        namespace=f"{user.org_id}/{project}")
+        return user
+
+    @app.post("/portal/api/projects")
+    async def project_add(request: Request):
+        """A person gives themselves a project in their own org."""
+        user = enrolled(request, write=True)
+        body = await body_of(request)
+        user = change_grant(user, str(body.get("project") or ""), True, by=user, allow_any=False)
+        return {"grants": list(user.grants)}
+
+    @app.post("/portal/api/projects/remove")
+    async def project_remove(request: Request):
+        """Take a project off one's own grants. Its memories stay in core."""
+        user = enrolled(request, write=True)
+        body = await body_of(request)
+        user = change_grant(user, str(body.get("project") or ""), False, by=user, allow_any=False)
+        return {"grants": list(user.grants)}
+
     @app.post("/portal/api/access")
     async def access(request: Request):
         user = enrolled(request, write=True)
@@ -575,6 +612,17 @@ def mount_portal(
         registry.record(op="admin:update", decision="allow", status=200, email=target.email,
                         reason=f"by {actor.email}; {', '.join(changes) or 'no change'}")
         return {"account": account(registry.user(target.user_id), registry.last_seen())}
+
+    @app.post("/portal/api/admin/users/grant")
+    async def admin_grant(request: Request):
+        actor = admin(request, write=True)
+        body = await body_of(request)
+        target = registry.user_by_email(str(body.get("email") or ""))
+        if target is None:
+            raise HTTPException(404, "no such account")
+        target = change_grant(target, str(body.get("project") or ""), not body.get("remove"),
+                              by=actor, allow_any=True)
+        return {"account": account(target, registry.last_seen())}
 
     @app.post("/portal/api/admin/users/sync")
     async def admin_sync(request: Request):

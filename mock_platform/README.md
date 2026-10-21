@@ -235,8 +235,10 @@ Keycloak session. What someone may do here comes from the **platform's** role
 
 - who they are, how that was established, their employee ID, role and namespace;
 - their namespaces: one row per granted project (`<org>/<project>`), each with
-  its stored count, export and delete-all; memory on/off is per person. The
-  Memories and recall tabs show the default project;
+  its stored count, export and delete-all; memory on/off is per person. They
+  can add a project to their own org and remove one again (its memories stay;
+  the default project stays granted). The Memories and recall tabs show the
+  default project;
 - every way into their memory, with a switch each: Open WebUI (the app key plus
   their signed token) and each personal LiteLLM key. A switched-off way gets
   "not enrolled": that client keeps working without memory;
@@ -254,8 +256,9 @@ The Memories and "What would it recall?" tabs are unchanged.
   repeats both lookups, updates the employee ID, and unlinks keys LiteLLM no
   longer has; "Reconcile keys with LiteLLM" does for everyone what the
   background job does every 10 minutes;
-- delete an account (optionally with its memories), switch memory, change role.
-  An admin cannot delete or demote themselves;
+- delete an account (optionally with its memories), switch memory, change role,
+  grant or remove a project for anyone (`*` for any project). An admin cannot
+  delete or demote themselves;
 - what the platform trusts: LiteLLM deployments, apps with signed tokens, Corp
   SSO, and the LiteLLM lookup;
 - the audit log: every authorization decision and admin action, filterable.
@@ -281,6 +284,5 @@ SameSite=Strict cookie, and writes also need an `X-MM-Portal` header.
   create or sync time; a change in Keycloak needs a sync.
 - **Disabling is judged when each call arrives.** A store that lands after a
   person is re-enabled is stored.
-- No shared namespaces: one org per person, however many projects. Grants are
-  edited with the CLI; the portal shows them and will edit them later.
+- No shared namespaces: one org per person, however many projects.
 - **The portal has no rate limiting**, and pending sign-ins live in memory.
