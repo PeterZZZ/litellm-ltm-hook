@@ -1,0 +1,82 @@
+# MemMachine core for the platform-mode test stack. Copy to
+# $ENV_DIR/memmachine/cfg.yml, fill in the two secrets, chmod 600.
+#
+# Core keeps episodes in Postgres (pgvector) and vectors in Qdrant, and gets
+# its embedder and LLM from this stack's own LiteLLM on :4011 with the master
+# key. Those calls use the plain model names, so the memory hook ignores them
+# (it only acts on `memmachine-` models) and core never recurses into itself.
+
+logging:
+  path: /opt/ltm-platform-env/data/memmachine/memmachine.log
+  level: info
+
+episode_store:
+  database: profile_storage
+
+episodic_memory:
+  long_term_memory:
+    backend: event
+    embedder: gateway_embedder
+    vector_store: event_vector_store
+    segment_store: profile_storage
+
+# Required even when unused: the server will not start without the section.
+semantic_memory:
+  llm_model: gateway_model
+  embedding_model: gateway_embedder
+  database: profile_storage
+  config_database: profile_storage
+
+session_manager:
+  database: profile_storage
+
+retrieval_agent:
+  llm_model: gateway_model
+
+prompt:
+  default_project_categories:
+    - profile_prompt
+
+resources:
+  databases:
+    profile_storage:
+      provider: postgres
+      config:
+        host: 127.0.0.1
+        port: 5432
+        user: memmachine
+        password: "<MEMMACHINE_DB_PASSWORD, step 3>"
+        db_name: memmachine
+        pool_size: 5
+        max_overflow: 10
+        pool_timeout: 30
+        pool_recycle: -1
+        pool_pre_ping: false
+    event_vector_store:
+      provider: qdrant
+      config:
+        host: 127.0.0.1
+        port: 6333
+        grpc_port: 6334
+        prefer_grpc: false
+        https: false
+
+  embedders:
+    # LiteLLM speaks the OpenAI wire format, hence the openai provider.
+    # Changing the embedding model invalidates every vector already stored.
+    gateway_embedder:
+      provider: openai
+      config:
+        max_input_length: 2048
+        model: "text-embedding-3-small"
+        api_key: "<LITELLM_MASTER_KEY, step 4>"
+        base_url: "http://127.0.0.1:4011/v1"
+        dimensions: 1536
+
+  language_models:
+    gateway_model:
+      provider: openai-chat-completions
+      config:
+        model: "glm-5.2"
+        api_key: "<LITELLM_MASTER_KEY, step 4>"
+        base_url: "http://127.0.0.1:4011/v1"

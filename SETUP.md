@@ -9,13 +9,16 @@ browser ──► Keycloak :8180 (Corp SSO) ◄── sign-in for Open WebUI and
    │                                                                  │ X-MemMachine-* headers
    └─► platform portal :8100/portal/                                  ▼
                                                      mock platform :8100 ──► MemMachine core :8090
-Claude Code / curl ──(personal virtual key)──► LiteLLM :4011 ──┘
+Claude Code / curl ──(personal virtual key)──► LiteLLM :4011 ──┘              │ Postgres + Qdrant
+                                                      ▲                       │ embedder + LLM
+                                                      └───────────────────────┘ (plain model names)
 ```
 
 Read [`mock_platform/README.md`](./mock_platform/README.md) for what each piece
 checks and why; this file is only how to build it. Templates are in
 [`deploy/`](./deploy): env files (`deploy/env/*.example`), systemd units
-(`deploy/systemd/`), and LiteLLM's config (`deploy/litellm-config.yaml`).
+(`deploy/systemd/`), LiteLLM's config (`deploy/litellm-config.yaml`) and
+MemMachine core's (`deploy/memmachine-cfg.yml`).
 
 Everything below assumes `ENV_DIR=/opt/ltm-platform-env`, the repo checked out at
 `$ENV_DIR/repo`, services running as user `ubuntu`, and every port bound to
@@ -30,24 +33,32 @@ Everything below assumes `ENV_DIR=/opt/ltm-platform-env`, the repo checked out a
 | LiteLLM | 1.100.1 (`litellm[proxy]`), Postgres 18 for its keys |
 | Open WebUI | 0.11.3 |
 | Keycloak | 26.7.5, OpenJDK 21 |
-| MemMachine core | v2 REST API on :8090 |
+| MemMachine core | `MemMachine/MemMachine`, branch `speedkick`, commit `0b15fad` of 2026-09-10 (v2 REST API on :8090), Postgres 18 + pgvector 0.8.1, Qdrant 1.19.0 |
+| Models | chat `deepinfra/zai-org/GLM-5.2`, embeddings `openai/text-embedding-3-small`, both through LiteLLM |
 
 ## 0. Prerequisites
 
-- **MemMachine core** reachable at `http://127.0.0.1:8090` (`/api/v2/memories`,
-  `/search`, `/list`, `/projects`). Setting it up is out of scope here; any core
-  with the v2 API and a working embedder will do. The platform is only a
-  boundary if core accepts traffic from the platform alone, which a shared test
-  host usually cannot enforce.
-- A model provider key for `deploy/litellm-config.yaml` (DeepInfra in the
-  template; any LiteLLM provider works).
-- `uv`, `postgresql`, `openjdk-21-jre-headless`, `curl`, `node` (optional, only
-  to syntax-check the portal page).
+- **Two provider keys**: one for the chat model (DeepInfra in the template; any
+  LiteLLM provider works) and an OpenAI key for `text-embedding-3-small`, which
+  MemMachine core embeds with. Both go into `litellm.env` only (step 4); nothing
+  else in the stack sees them, because core reaches both models through
+  LiteLLM.
+- **MemMachine core** is built here (step 6) with Postgres and Qdrant on the
+  same host. If you already run a core with the v2 API (`/api/v2/memories`,
+  `/search`, `/list`, `/projects`), skip step 6 and point `platform.env`'s
+  `MOCK_PLATFORM_CORE_URL` at it. Either way, the platform is only a boundary if
+  core accepts traffic from the platform alone, which a shared test host usually
+  cannot enforce.
+- `uv`, `git`, `postgresql` with `pgvector`, `openjdk-21-jre-headless`, `curl`,
+  `node` (optional, only to syntax-check the portal page).
 
 ```bash
-sudo apt-get install -y postgresql openjdk-21-jre-headless
+sudo apt-get install -y git postgresql postgresql-18-pgvector openjdk-21-jre-headless
 curl -LsSf https://astral.sh/uv/install.sh | sh
 ```
+
+If your Ubuntu ships another Postgres major, use the matching
+`postgresql-<major>-pgvector` package.
 
 ## 1. Layout
 
@@ -55,7 +66,7 @@ curl -LsSf https://astral.sh/uv/install.sh | sh
 ENV_DIR=/opt/ltm-platform-env
 sudo mkdir -p $ENV_DIR && sudo chown ubuntu:ubuntu $ENV_DIR
 git clone -b feat/mock-platform https://github.com/PeterZZZ/litellm-ltm-hook.git $ENV_DIR/repo
-mkdir -p $ENV_DIR/{litellm,openwebui,platform,keycloak,data/openwebui}
+mkdir -p $ENV_DIR/{bin,litellm,openwebui,platform,keycloak,memmachine,data/openwebui,data/memmachine,data/qdrant}
 ```
 
 ## 2. Install
@@ -75,6 +86,19 @@ curl -sSLO https://github.com/keycloak/keycloak/releases/download/26.7.5/keycloa
 curl -sSL https://github.com/keycloak/keycloak/releases/download/26.7.5/keycloak-26.7.5.tar.gz.sha1
 sha1sum keycloak-26.7.5.tar.gz          # must match the line above
 tar xzf keycloak-26.7.5.tar.gz && rm keycloak-26.7.5.tar.gz
+
+# MemMachine core: the upstream repo's `speedkick` branch, pinned to the commit
+# this stack was tested with (2026-09-10; the branch has moved on since), and
+# installed into its own venv by uv (the workspace's lock file pins everything).
+cd $ENV_DIR/memmachine
+git clone -b speedkick https://github.com/MemMachine/MemMachine.git src
+(cd src && git checkout 0b15fad && uv sync --package memmachine-server)
+ls src/.venv/bin/memmachine-server
+
+# Qdrant, a single binary.
+cd $ENV_DIR/bin
+curl -sSL https://github.com/qdrant/qdrant/releases/download/v1.19.0/qdrant-x86_64-unknown-linux-gnu.tar.gz | tar xz
+./qdrant --version
 ```
 
 The hook runs inside LiteLLM: link it and its adapters next to LiteLLM's config
@@ -88,14 +112,26 @@ ln -s $ENV_DIR/repo/memmachine_adapters $ENV_DIR/litellm/memmachine_adapters
 cp $ENV_DIR/repo/deploy/litellm-config.yaml $ENV_DIR/litellm/config.yaml
 ```
 
-## 3. Postgres for LiteLLM's virtual keys
+## 3. Postgres: one database for LiteLLM's keys, one for MemMachine
+
+Two roles, two databases, two generated passwords. Keep the passwords only in
+the files named here.
 
 ```bash
-sudo -u postgres psql -c "CREATE USER ltmplatform WITH PASSWORD '<password>';"
+LITELLM_DB_PASSWORD=$(python3 -c 'import secrets; print(secrets.token_urlsafe(24))')
+MEMMACHINE_DB_PASSWORD=$(python3 -c 'import secrets; print(secrets.token_urlsafe(24))')
+sudo -u postgres psql -c "CREATE USER ltmplatform WITH PASSWORD '$LITELLM_DB_PASSWORD';"
 sudo -u postgres psql -c "CREATE DATABASE ltmplatform OWNER ltmplatform;"
+sudo -u postgres psql -c "CREATE USER memmachine WITH PASSWORD '$MEMMACHINE_DB_PASSWORD';"
+sudo -u postgres psql -c "CREATE DATABASE memmachine OWNER memmachine;"
+sudo -u postgres psql -d memmachine -c "CREATE EXTENSION IF NOT EXISTS vector;"
+echo "litellm.env    DATABASE_URL=postgresql://ltmplatform:$LITELLM_DB_PASSWORD@127.0.0.1:5432/ltmplatform"
+echo "memmachine/cfg.yml  password: $MEMMACHINE_DB_PASSWORD"
 ```
 
-LiteLLM creates its tables on first start (about a minute).
+The two `echo` lines are what goes into `litellm.env` (step 4) and
+`memmachine/cfg.yml` (step 6). LiteLLM and core each create their own tables on
+first start (LiteLLM takes about a minute).
 
 ## 4. Secrets
 
@@ -112,6 +148,21 @@ Copy each `deploy/env/*.example` to `$ENV_DIR/` without `.example`, fill in what
 you have so far, and `chmod 600 $ENV_DIR/*.env $ENV_DIR/accounts.txt`. The rest
 (client secrets, virtual keys, the service credential) are produced by the
 steps below; come back and fill them in as they appear.
+
+```bash
+cd $ENV_DIR/repo/deploy/env
+for f in *.example; do cp -n "$f" "$ENV_DIR/${f%.example}"; done
+cp -n $ENV_DIR/repo/deploy/memmachine-cfg.yml $ENV_DIR/memmachine/cfg.yml
+chmod 600 $ENV_DIR/*.env $ENV_DIR/accounts.txt $ENV_DIR/memmachine/cfg.yml
+```
+
+The provider keys go into `litellm.env` and nowhere else: `DEEPINFRA_API_KEY`
+for the chat model and `OPENAI_API_KEY` for the embedding model. Open WebUI,
+the platform and core all reach the models through LiteLLM with keys LiteLLM
+issues, so a provider key never leaves that file. The LiteLLM master key from
+above goes into `litellm.env` and, as the embedder's and LLM's `api_key`, into
+`memmachine/cfg.yml`; the Postgres passwords from step 3 go where its `echo`
+lines said.
 
 `accounts.txt` holds the test people's Keycloak passwords (`email password` per
 line); pick them now.
@@ -138,18 +189,46 @@ Copy the two secrets from `keycloak-clients.env` into `openwebui.env`
 (`OAUTH_CLIENT_SECRET`) and `platform.env` (`MOCK_PLATFORM_OIDC_CLIENT_SECRET`).
 The script is idempotent; rerun it after editing `USERS`.
 
-## 6. LiteLLM
+## 6. MemMachine core
 
-Start it with `MEMMACHINE_API_KEY` still a placeholder; it is filled in at step 8.
+Core needs Postgres (step 3), Qdrant, and an OpenAI-compatible endpoint for its
+embedder and LLM, which is this stack's LiteLLM on :4011 with the master key
+(`memmachine/cfg.yml`, filled in at step 4). The model names there are the plain
+ones, so the hook inside LiteLLM ignores core's own calls and core never
+recurses into memory. Core starts before LiteLLM is up; it just fails
+individual embed calls until step 7.
+
+```bash
+sudo systemctl enable --now ltmplat-qdrant
+until curl -sf http://127.0.0.1:6333/ >/dev/null; do sleep 2; done
+sudo systemctl enable --now ltmplat-memmachine
+until curl -sf http://127.0.0.1:8090/openapi.json >/dev/null; do sleep 3; done
+curl -s http://127.0.0.1:8090/openapi.json | grep -o '"/api/v2/memories/[a-z]*"' | sort -u
+# "/api/v2/memories/list" "/api/v2/memories/search" ... = the v2 API the platform forwards to
+```
+
+Logs are in `$ENV_DIR/data/memmachine/memmachine.log`; `journalctl -u
+ltmplat-memmachine` shows start-up errors (a wrong database password or a
+missing `vector` extension both fail there).
+
+## 7. LiteLLM
+
+Start it with `MEMMACHINE_API_KEY` still a placeholder; it is filled in at step 9.
 The hook only calls the platform for `memmachine-` models, so plain models work
 meanwhile.
 
 ```bash
 sudo systemctl enable --now ltmplat-litellm
 until curl -sf http://127.0.0.1:4011/health/liveliness >/dev/null; do sleep 3; done
+# Both provider keys work: a chat completion and an embedding through the gateway.
+set -a; . $ENV_DIR/litellm.env; set +a
+curl -s http://127.0.0.1:4011/v1/embeddings -H "Authorization: Bearer $LITELLM_MASTER_KEY" -H 'Content-Type: application/json' \
+  -d '{"model":"text-embedding-3-small","input":"hello"}' | head -c 80; echo
+curl -s http://127.0.0.1:4011/v1/chat/completions -H "Authorization: Bearer $LITELLM_MASTER_KEY" -H 'Content-Type: application/json' \
+  -d '{"model":"glm-5.2","messages":[{"role":"user","content":"Say OK."}]}' | head -c 200; echo
 ```
 
-## 7. Virtual keys
+## 8. Virtual keys
 
 ```bash
 set -a; . $ENV_DIR/litellm.env; set +a
@@ -173,7 +252,7 @@ done
 
 Each `/key/generate` prints the key once, in `"key"`.
 
-## 8. The platform's registry
+## 9. The platform's registry
 
 ```bash
 cd $ENV_DIR/repo
@@ -192,7 +271,7 @@ $A show
 
 Nobody's personal key is linked by hand: with `MOCK_PLATFORM_LITELLM_KEY` set,
 the platform asks LiteLLM about a key the first time it is used and links it to
-its owner if that owner is enrolled (alice's and bob's keys, created in step 7
+its owner if that owner is enrolled (alice's and bob's keys, created in step 8
 with `user_id` = employee ID, link themselves on their first chat). Every 10
 minutes, and from the Admin tab's "Reconcile" button, it re-reads LiteLLM's key
 list and drops keys that are gone, blocked or reassigned.
@@ -209,7 +288,7 @@ sudo systemctl restart ltmplat-litellm     # picks up MEMMACHINE_API_KEY
 curl -s http://127.0.0.1:8100/portal/api/config   # {"sso":true,...}
 ```
 
-## 9. Open WebUI
+## 10. Open WebUI
 
 ```bash
 sudo systemctl enable --now ltmplat-openwebui
@@ -229,10 +308,10 @@ Headers: `{"x-memmachine-client": "openwebui"}`. Without it the hook still
 recognises Open WebUI's requests, and labels them `other` when they carry no
 signed user token.
 
-## 10. Claude Code
+## 11. Claude Code
 
-Claude Code reaches LiteLLM with the person's own key (Alice's from step 7,
-registered in step 8); the hook's Claude Code adapter handles it. Print the
+Claude Code reaches LiteLLM with the person's own key (Alice's from step 8,
+linked by the platform on its first use, step 9); the hook's Claude Code adapter handles it. Print the
 settings for that key and put them in the person's `~/.claude/settings.json`
 (merge with what is there; `chmod 600` it):
 
@@ -243,7 +322,7 @@ grep ^ALICE_VIRTUAL_KEY= $ENV_DIR/keys.env | cut -d= -f2- \
 
 A new person in one go (LiteLLM user + key + this block):
 `tools/litellm-admin.sh add-user E12345 alice@corp.example`; the platform must
-know the key before it gives memory (step 8).
+know the person before it gives memory (step 9); the key links itself.
 
 What matters in the block:
 
@@ -262,12 +341,12 @@ What matters in the block:
   way; `CLAUDE_CODE_MAX_CONTEXT_TOKENS` leaves room for the memory block.
 
 `ANTHROPIC_BASE_URL` is `http://127.0.0.1:4011`: run Claude Code on this host,
-or forward 4011 (the `ssh -L` line in step 11). Try it in an empty folder, so it
+or forward 4011 (the `ssh -L` line in step 12). Try it in an empty folder, so it
 cannot answer from files: tell it a fact, start a new session, ask for it. The
 same fact is then also recalled in Open WebUI as Alice (stores land some
 seconds after the answer; wait ~30 s before asking elsewhere).
 
-## 11. Verify
+## 12. Verify
 
 ```bash
 cd $ENV_DIR/repo
@@ -287,7 +366,7 @@ the master key). Unit tests, no network:
 uv run --group platform pytest -q test_hook.py test_platform.py test_portal.py test_sso.py test_linking.py
 ```
 
-Last tested at commit `e599e23` (row 3: automatic key linking with reconcile)
+Last tested at commit `e839a82` (rows 7, 9, 2, 3, the portal fixes, and the hook adapters from PR #1: 41/41 plus a Claude Code round trip)
 on branch `feat/mock-platform`; the shared VM should run that or later.
 
 To use it from a laptop, forward every port the browser touches; Keycloak's
@@ -306,7 +385,7 @@ LiteLLM's own dashboard is at `http://127.0.0.1:4011/ui` (user `admin`, password
 | Symptom | Cause | Fix |
 |---|---|---|
 | Open WebUI still shows the password form | `ENABLE_LOGIN_FORM`, `DEFAULT_USER_ROLE`, task model and similar settings only seed Open WebUI's stored config on its **first** start | On an existing install, change them in Admin Settings, or stop Open WebUI and update the `config` table row (e.g. `ui.enable_login_form` → `false`) |
-| Claude Code gets no memory, and the gateway logs no `MemMachine trace` lines for it | Claude Code sends no hint headers | `CLAUDE_CODE_GATEWAY_HINT_HEADERS=1` in its settings (step 10) |
+| Claude Code gets no memory, and the gateway logs no `MemMachine trace` lines for it | Claude Code sends no hint headers | `CLAUDE_CODE_GATEWAY_HINT_HEADERS=1` in its settings (step 11) |
 | The gateway logs 400s for `claude-…` models nobody configured | Claude Code asks for some built-in model names by itself (the auto-mode classifier's `claude-sonnet-5`, …) | The `claude-*` entry in `deploy/litellm-config.yaml` serves them as the plain model |
 | Users see "Model not found" | Models from a connection are admin-only by default | `BYPASS_MODEL_ACCESS_CONTROL=true`, or grant read on each model to users |
 | New SSO users cannot chat | `DEFAULT_USER_ROLE` defaults to `pending` | `DEFAULT_USER_ROLE=user` before first start, or approve them as admin |
@@ -325,6 +404,6 @@ LiteLLM's own dashboard is at `http://127.0.0.1:4011/ui` (user `admin`, password
 
 - **SSO on LiteLLM's dashboard** (developers creating their own keys). LiteLLM's
   free tier refuses it beyond 5 users, and it counts every LiteLLM user row,
-  service users included. Keys here are created through the API in step 7.
+  service users included. Keys here are created through the API in step 8.
 - A real secret store, TLS, or network rules that make core reachable only
   from the platform.

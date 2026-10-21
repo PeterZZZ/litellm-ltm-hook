@@ -131,11 +131,12 @@ def authorize(registry: Registry, headers, now: Optional[float] = None,
         raise Denied(401, "no virtual key evidence")
 
     # 3. Does the platform know that key at all.
+    why = registry.revoked(key_hash)
+    if why:
+        raise Denied(403, f"key reassigned in LiteLLM, per reconcile: {why}", KEY_REASSIGNED,
+                     service=service)
     key = registry.key(key_hash)
     if key is None:
-        why = registry.revoked(key_hash)
-        if why:
-            raise Denied(403, f"key unlinked by reconcile: {why}", KEY_REASSIGNED, service=service)
         raise Denied(403, "virtual key not registered", NOT_ENROLLED, service=service)
 
     token = (headers.get(ASSERTION_HEADER) or "").strip()

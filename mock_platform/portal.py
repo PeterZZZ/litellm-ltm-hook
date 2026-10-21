@@ -44,12 +44,12 @@ import jwt
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, Response
 
-from .registry import Registry, User
+from .registry import ANY_PROJECT, Registry, User, _ORG_ID_ALLOWED as _BAD_PROJECT
 
 COOKIE = "mm_portal"
 # Bumped whenever the page and these routes change together. A tab still running
 # an older page sees a different value and reloads itself instead of breaking.
-UI_VERSION = "2026-10-20.2"
+UI_VERSION = "2026-10-20.4"
 SESSION_SECONDS = 8 * 60 * 60
 LOGIN_SECONDS = 10 * 60  # how long a sign-in may sit at Keycloak
 STATE_COOKIE = "mm_portal_login"
@@ -143,16 +143,28 @@ def mount_portal(
             raise HTTPException(502, f"memory service error ({resp.status_code})")
         return resp.json() if resp.content else {}
 
-    async def episode_count(user: User) -> int:
+    def project_of(user: User, requested) -> str:
+        """Which of the person's granted projects a memory route works in.
+
+        `requested` is the body's or query's `project`; empty means their
+        default. Anything not granted is refused, so a route can never reach
+        a namespace the person does not hold.
+        """
+        project = str(requested or "").strip() or user.project_id
+        if not user.allows(project) or (project != user.project_id and _BAD_PROJECT.search(project)):
+            raise HTTPException(403, f"project {project!r} is not one of yours")
+        return project
+
+    async def episode_count(user: User, project: Optional[str] = None) -> int:
         try:
             got = await core("/api/v2/projects/episode_count/get",
-                             {"org_id": user.org_id, "project_id": user.project_id})
+                             {"org_id": user.org_id, "project_id": project or user.project_id})
             return int(got.get("count", 0))
         except HTTPException:
             return 0
 
-    async def all_episodes(user: User) -> list[dict]:
-        ns = {"org_id": user.org_id, "project_id": user.project_id}
+    async def all_episodes(user: User, project: Optional[str] = None) -> list[dict]:
+        ns = {"org_id": user.org_id, "project_id": project or user.project_id}
         out: list[dict] = []
         page = 0
         while len(out) < MAX_EPISODES:
@@ -164,12 +176,13 @@ def mount_portal(
             page += 1
         return out
 
-    async def delete_ids(user: User, ids: list[str]) -> int:
-        owned = {str(e.get("uid")) for e in await all_episodes(user)}
+    async def delete_ids(user: User, ids: list[str], project: Optional[str] = None) -> int:
+        project = project or user.project_id
+        owned = {str(e.get("uid")) for e in await all_episodes(user, project)}
         ids = [i for i in dict.fromkeys(str(i) for i in ids) if i in owned]
         for start in range(0, len(ids), 100):
             await core("/api/v2/memories/episodic/delete", {
-                "org_id": user.org_id, "project_id": user.project_id,
+                "org_id": user.org_id, "project_id": project,
                 "episodic_ids": ids[start:start + 100],
             })
         return len(ids)
@@ -386,11 +399,14 @@ def mount_portal(
             "email": email, "name": name, "enrolled": True, "role": user.role, "ui": UI_VERSION,
             "employee_id": user.employee_id, "sso_employee_id": entry.get("employee_id"),
             "signed_in_via": via,
+            # One row per granted project, the default first. `*` cannot be
+            # listed: core is only asked about projects named here.
             "namespaces": [{
-                "name": user.project_id, "org_id": user.org_id, "project_id": user.project_id,
+                "name": project, "org_id": user.org_id, "project_id": project,
                 "kind": "Personal", "enabled": user.enabled,
-                "episodes": await episode_count(user),
-            }],
+                "episodes": await episode_count(user, project),
+            } for project in [user.project_id] + sorted(
+                g for g in user.grants if g not in (user.project_id, ANY_PROJECT))],
             "grants": list(user.grants),
             "access": access_paths(user),
         }
@@ -427,19 +443,23 @@ def mount_portal(
     @app.get("/portal/api/memories")
     async def memories(request: Request):
         user = enrolled(request)
-        return {"turns": _turns(await all_episodes(user))}
+        project = project_of(user, request.query_params.get("project"))
+        return {"project": project, "turns": _turns(await all_episodes(user, project))}
 
     @app.post("/portal/api/memories/delete")
     async def delete(request: Request):
         user = enrolled(request, write=True)
         body = await body_of(request)
-        return {"deleted": await delete_ids(user, list(body.get("ids") or []))}
+        project = project_of(user, body.get("project"))
+        return {"deleted": await delete_ids(user, list(body.get("ids") or []), project)}
 
     @app.post("/portal/api/memories/clear")
     async def clear(request: Request):
         user = enrolled(request, write=True)
-        ids = [str(e.get("uid")) for e in await all_episodes(user)]
-        return {"deleted": await delete_ids(user, ids)}
+        body = await body_of(request)
+        project = project_of(user, body.get("project"))
+        ids = [str(e.get("uid")) for e in await all_episodes(user, project)]
+        return {"deleted": await delete_ids(user, ids, project)}
 
     @app.post("/portal/api/memories/add")
     async def add(request: Request):
@@ -484,16 +504,17 @@ def mount_portal(
     @app.get("/portal/api/export")
     async def export(request: Request):
         user = enrolled(request)
+        project = project_of(user, request.query_params.get("project"))
         data = {
             "exported_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
             "email": user.email,
-            "namespace": f"{user.org_id}/{user.project_id}",
-            "episodes": [_episode(e) for e in await all_episodes(user)],
+            "namespace": f"{user.org_id}/{project}",
+            "episodes": [_episode(e) for e in await all_episodes(user, project)],
         }
         return Response(json.dumps(data, indent=2, ensure_ascii=False),
                         media_type="application/json",
                         headers={"Content-Disposition":
-                                 f'attachment; filename="memory-{user.org_id}.json"'})
+                                 f'attachment; filename="memory-{user.org_id}-{project}.json"'})
 
     # ---------- admin ----------
 
