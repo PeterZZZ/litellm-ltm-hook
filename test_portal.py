@@ -178,6 +178,44 @@ class TestGrantedProjects:
         assert r.status_code == 403
 
 
+class TestGrantEditing:
+    def test_person_adds_and_removes_own_project(self, world):
+        login(world)
+        r = world.client.post("/portal/api/projects", headers=W, json={"project": "research"})
+        assert r.status_code == 200 and r.json()["grants"] == ["default", "research"]
+        assert world.reg.user_by_email("alice@corp.example").allows("research")
+        last = world.reg.audit(1)[0]
+        assert last["op"] == "project:add" and last["namespace"] == "alice_corp_example/research"
+        r = world.client.post("/portal/api/projects/remove", headers=W, json={"project": "research"})
+        assert r.json()["grants"] == ["default"]
+
+    def test_default_cannot_be_removed_and_star_is_admins(self, world):
+        login(world)
+        assert world.client.post("/portal/api/projects/remove", headers=W, json={"project": "default"}).status_code == 400
+        assert world.client.post("/portal/api/projects", headers=W, json={"project": "*"}).status_code == 400
+        assert world.client.post("/portal/api/projects", headers=W, json={"project": "pay roll"}).status_code == 400
+        assert world.reg.user_by_email("alice@corp.example").grants == ("default",)
+
+    def test_admin_grants_and_removes_for_anyone(self, world):
+        login(world, "root@corp.example")
+        r = world.client.post("/portal/api/admin/users/grant", headers=W,
+                              json={"email": "bob@corp.example", "project": "*"})
+        assert r.status_code == 200 and r.json()["account"]["grants"] == ["*", "default"]
+        assert world.reg.audit(1)[0]["op"] == "admin:grant"
+        r = world.client.post("/portal/api/admin/users/grant", headers=W,
+                              json={"email": "bob@corp.example", "project": "*", "remove": True})
+        assert r.json()["account"]["grants"] == ["default"]
+        assert world.client.post("/portal/api/admin/users/grant", headers=W,
+                                 json={"email": "nobody@corp.example", "project": "x"}).status_code == 404
+
+    def test_non_admin_cannot_use_the_admin_route(self, world):
+        login(world)
+        r = world.client.post("/portal/api/admin/users/grant", headers=W,
+                              json={"email": "bob@corp.example", "project": "research"})
+        assert r.status_code == 403
+        assert world.reg.user_by_email("bob@corp.example").grants == ("default",)
+
+
 class TestOwnMemoryOnly:
     def test_lists_only_own_namespace(self, world):
         login(world)
