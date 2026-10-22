@@ -49,7 +49,7 @@ from .registry import ANY_PROJECT, Registry, User, _ORG_ID_ALLOWED as _BAD_PROJE
 COOKIE = "mm_portal"
 # Bumped whenever the page and these routes change together. A tab still running
 # an older page sees a different value and reloads itself instead of breaking.
-UI_VERSION = "2026-10-21.1"
+UI_VERSION = "2026-10-22.1"
 SESSION_SECONDS = 8 * 60 * 60
 LOGIN_SECONDS = 10 * 60  # how long a sign-in may sit at Keycloak
 STATE_COOKIE = "mm_portal_login"
@@ -154,6 +154,12 @@ def mount_portal(
         if not user.allows(project) or (project != user.project_id and _BAD_PROJECT.search(project)):
             raise HTTPException(403, f"project {project!r} is not one of yours")
         return project
+
+    def projects_of(user: User) -> list[str]:
+        """Every project the person holds by name, default first. `*` cannot
+        be listed: core is only asked about projects named here."""
+        return [user.project_id] + sorted(
+            g for g in user.grants if g not in (user.project_id, ANY_PROJECT))
 
     async def episode_count(user: User, project: Optional[str] = None) -> int:
         try:
@@ -479,9 +485,15 @@ def mount_portal(
 
     @app.get("/portal/api/memories")
     async def memories(request: Request):
+        """Turns from one project (`?project=`), or from every project the
+        person holds (`all`, the default), each turn tagged with its project."""
         user = enrolled(request)
-        project = project_of(user, request.query_params.get("project"))
-        return {"project": project, "turns": _turns(await all_episodes(user, project))}
+        wanted = str(request.query_params.get("project") or "all").strip()
+        projects = projects_of(user) if wanted == "all" else [project_of(user, wanted)]
+        found = await asyncio.gather(*(all_episodes(user, p) for p in projects))
+        turns = [t for p, eps in zip(projects, found) for t in _turns(eps, project=p)]
+        turns.sort(key=lambda t: t["at"] or "", reverse=True)
+        return {"projects": projects, "turns": turns}
 
     @app.post("/portal/api/memories/delete")
     async def delete(request: Request):
@@ -507,10 +519,11 @@ def mount_portal(
             raise HTTPException(400, "nothing to remember")
         if len(text) > 4000:
             raise HTTPException(400, "keep it under 4000 characters")
-        await core("/api/v2/projects", {"org_id": user.org_id, "project_id": user.project_id,
+        project = project_of(user, body.get("project"))
+        await core("/api/v2/projects", {"org_id": user.org_id, "project_id": project,
                                         "description": "mock platform"})
         await core("/api/v2/memories", {
-            "org_id": user.org_id, "project_id": user.project_id, "types": [],
+            "org_id": user.org_id, "project_id": project, "types": [],
             "messages": [{
                 "content": text, "role": "user", "producer": user.user_id,
                 "produced_for": "litellm",
@@ -527,8 +540,9 @@ def mount_portal(
         query = str(body.get("query") or "").strip()
         if not query:
             raise HTTPException(400, "type something to look up")
+        project = project_of(user, body.get("project"))
         found = await core("/api/v2/memories/search", {
-            "org_id": user.org_id, "project_id": user.project_id,
+            "org_id": user.org_id, "project_id": project,
             "query": query, "top_k": 8, "types": ["episodic"],
         })
         episodic = (found.get("content") or {}).get("episodic_memory") or {}
@@ -747,7 +761,7 @@ def _task_kind(text: str) -> Optional[str]:
     return "background task"
 
 
-def _turns(episodes: list[dict]) -> list[dict]:
+def _turns(episodes: list[dict], project: Optional[str] = None) -> list[dict]:
     """Pair each stored user message with the reply stored beside it, newest first."""
     eps = sorted(episodes, key=lambda e: (e.get("created_at") or "", _num(e.get("uid"))))
     turns, i = [], 0
@@ -769,6 +783,7 @@ def _turns(episodes: list[dict]) -> list[dict]:
             "at": first["at"],
             "source": first["source"],
             "automatic": _task_kind(you["text"]) if you else None,
+            "project": project,
         })
     turns.reverse()
     return turns

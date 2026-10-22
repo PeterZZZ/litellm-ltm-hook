@@ -153,6 +153,28 @@ class TestGrantedProjects:
         me = world.client.get("/portal/api/me").json()
         assert [(n["project_id"], n["episodes"]) for n in me["namespaces"]] == [("default", 2), ("research", 1)]
 
+    def test_memories_span_every_project_and_say_which(self, world):
+        world.reg.grant("alice@corp.example", "research")
+        world.store["alice_corp_example/research"] = [ep(9, "user", "research note", "r", at="2026-10-15T10:00:00.000000Z")]
+        login(world)
+        r = world.client.get("/portal/api/memories").json()
+        assert r["projects"] == ["default", "research"]
+        assert [(t["project"], t["you"]) for t in r["turns"]] == [("research", "research note"), ("default", "I ride a Kona bike")]
+        only = world.client.get("/portal/api/memories?project=research").json()
+        assert only["projects"] == ["research"] and [t["project"] for t in only["turns"]] == ["research"]
+
+    def test_add_and_recall_take_a_project(self, world):
+        world.reg.grant("alice@corp.example", "research")
+        login(world)
+        world.client.post("/portal/api/memories/add", headers=W, json={"text": "a note", "project": "research"})
+        added = [c for c in world.calls if c[0] == "/api/v2/memories"][-1][1]
+        assert added["project_id"] == "research"
+        world.client.post("/portal/api/recall", headers=W, json={"query": "note", "project": "research"})
+        searched = [c for c in world.calls if c[0] == "/api/v2/memories/search"][-1][1]
+        assert searched["project_id"] == "research"
+        assert world.client.post("/portal/api/memories/add", headers=W,
+                                 json={"text": "x", "project": "payroll"}).status_code == 403
+
     def test_star_is_not_listed(self, world):
         world.reg.grant("alice@corp.example", "*")
         login(world)

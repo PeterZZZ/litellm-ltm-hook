@@ -237,8 +237,8 @@ Keycloak session. What someone may do here comes from the **platform's** role
 - their namespaces: one row per granted project (`<org>/<project>`), each with
   its stored count, export and delete-all; memory on/off is per person. They
   can add a project to their own org and remove one again (its memories stay;
-  the default project stays granted). The Memories and recall tabs show the
-  default project;
+  the default project stays granted). The Memories tab shows every project
+  with a project filter; adding a memory and the recall preview pick one;
 - every way into their memory, with a switch each: Open WebUI (the app key plus
   their signed token) and each personal LiteLLM key. A switched-off way gets
   "not enrolled": that client keeps working without memory;

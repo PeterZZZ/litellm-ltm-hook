@@ -317,6 +317,7 @@ dialog::backdrop{background:rgba(10,10,20,.45)}
         <button class="btn" id="select-btn">Select</button>
         <button class="btn primary" id="add-btn">+ Add a memory</button>
       </div>
+      <div class="chips" id="project-chips"></div>
       <div class="chips" id="chips"></div>
       <div class="banner hidden" id="auto-banner">
         <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="8" cy="8" r="6"/><path d="M8 5v3.5M8 11h.01" stroke-linecap="round"/></svg>
@@ -341,6 +342,7 @@ dialog::backdrop{background:rgba(10,10,20,.45)}
           <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="7" cy="7" r="4.5"/><path d="M10.5 10.5L14 14" stroke-linecap="round"/></svg>
           <input class="t" id="recall-q" placeholder="e.g. What bike do I ride?">
         </div>
+        <select class="t hidden" id="recall-project" title="Which project to look in" style="max-width:200px"></select>
         <button class="btn primary" type="submit">Look up</button>
       </form>
       <div id="recall-out"></div>
@@ -392,6 +394,7 @@ dialog::backdrop{background:rgba(10,10,20,.45)}
     <h3>Add a memory</h3>
     <p>Write it the way you'd tell a colleague. The assistant will recall it in future chats.</p>
     <textarea class="t" id="add-text" rows="4" maxlength="4000" placeholder="I prefer metric units and short answers."></textarea>
+    <div id="add-project-row" class="hidden"><label class="f" for="add-project">Project</label><select class="t" id="add-project"></select></div>
     <div class="row"><button class="btn" value="cancel" formnovalidate>Cancel</button><button class="btn primary" id="add-save" value="save">Remember this</button></div>
   </form>
 </dialog>
@@ -500,14 +503,14 @@ function wayIn(d) {
 }
 
 /* ---------- state ---------- */
-const S = { me: null, turns: [], chip: "all", q: "", selecting: false, sel: new Set(), audit: [], achip: "all", users: [], hist: [], histN: 20, auditN: 30 };
+const S = { me: null, turns: [], chip: "all", project: "all", q: "", selecting: false, sel: new Set(), audit: [], achip: "all", users: [], hist: [], histN: 20, auditN: 30 };
 
 function show(view) {
   for (const v of ["login", "none", "main", "loading"]) $(`#v-${v}`).classList.toggle("hidden", v !== view);
   $("#who").classList.toggle("hidden", view === "login" || view === "loading");
 }
 
-const UI_VERSION = "2026-10-21.1";
+const UI_VERSION = "2026-10-22.1";
 async function showLogin() {
   let cfg = { sso: false, password: true };
   try { cfg = await (await fetch("/portal/api/config")).json(); } catch {}
@@ -566,7 +569,7 @@ function renderAccess() {
   const g = m.grants || [];
   $("#grants-note").replaceChildren(
     "Projects you may use in your org: ", ...(g.includes("*") ? [h("code", {}, "any")] : g.flatMap((p, i) => [i ? ", " : "", h("code", {}, p)])),
-    ". A client names the project (Claude Code per repository, Open WebUI through its connection headers); the platform checks the grant. The Memories and recall tabs show your default project. Removing a project keeps its memories in core.");
+    ". A client names the project (Claude Code per repository, Open WebUI through its connection headers); the platform checks the grant. The Memories tab shows every project, with a filter; recall looks in one at a time. Removing a project keeps its memories in core.");
   const ways = $("#ways"); ways.replaceChildren();
   if (!m.access.length) ways.append(h("p", { class: "muted" }, "Nothing can reach your memory yet."));
   for (const a of m.access) {
@@ -747,11 +750,13 @@ $("#audit-refresh").addEventListener("click", loadAudit);
 /* ---------- memories ---------- */
 async function loadTurns() {
   $("#list").replaceChildren(h("div", { class: "loading" }, h("span", { class: "spin" })));
-  try { S.turns = (await api("/portal/api/memories")).turns; }
+  try { const r = await api("/portal/api/memories?project=all"); S.turns = r.turns; S.projects = r.projects; }
   catch (e) { $("#list").replaceChildren(h("div", { class: "empty" }, e.message)); return; }
+  if (!S.projects.includes(S.project)) S.project = "all";
   S.sel.clear(); renderChips(); renderList();
   $("#tab-count").textContent = S.turns.filter(t => !t.automatic).length;
 }
+function inProject(t) { return S.project === "all" || t.project === S.project; }
 const CHIP_DEFS = [
   ["all", "All", t => !t.automatic],
   ["Open WebUI", "Open WebUI", t => t.source === "Open WebUI" && !t.automatic],
@@ -761,19 +766,29 @@ const CHIP_DEFS = [
   ["auto", "Automatic", t => !!t.automatic],
 ];
 function renderChips() {
+  const pc = $("#project-chips"); pc.replaceChildren();
+  const projects = S.projects || [];
+  pc.classList.toggle("hidden", projects.length < 2);
+  if (projects.length > 1) {
+    pc.append(h("span", { class: "muted", style: "font-size:12.5px;align-self:center;margin-right:4px" }, "Project:"));
+    for (const [id, label] of [["all", "All projects"], ...projects.map(p => [p, p])]) {
+      const n = S.turns.filter(t => !t.automatic && (id === "all" || t.project === id)).length;
+      pc.append(h("button", { class: "chip" + (S.project === id ? " on" : ""), title: id === "all" ? "" : `${S.me.namespaces[0].org_id}/${id}`, onclick: () => { S.project = id; renderChips(); renderList(); } }, label, h("span", { class: "n" }, n)));
+    }
+  }
   const c = $("#chips"); c.replaceChildren();
   for (const [id, label, fn] of CHIP_DEFS) {
-    const n = S.turns.filter(fn).length;
+    const n = S.turns.filter(t => inProject(t) && fn(t)).length;
     if (id !== "all" && !n) continue;
     c.append(h("button", { class: "chip" + (S.chip === id ? " on" : ""), onclick: () => { S.chip = id; renderChips(); renderList(); } }, label, h("span", { class: "n" }, n)));
   }
-  const autos = S.turns.filter(t => t.automatic).length;
+  const autos = S.turns.filter(t => t.automatic && inProject(t)).length;
   $("#auto-banner").classList.toggle("hidden", !autos);
   $("#auto-text").textContent = `${autos} ${autos === 1 ? "entry is" : "entries are"} Open WebUI's own background work (chat titles, tags), not things you said. They're hidden from your list.`;
 }
 function visible() {
   const fn = (CHIP_DEFS.find(c => c[0] === S.chip) || CHIP_DEFS[0])[2], q = S.q.trim().toLowerCase();
-  return S.turns.filter(t => fn(t) && (!q || (t.you || "").toLowerCase().includes(q) || (t.reply || "").toLowerCase().includes(q)));
+  return S.turns.filter(t => inProject(t) && fn(t) && (!q || (t.you || "").toLowerCase().includes(q) || (t.reply || "").toLowerCase().includes(q)));
 }
 function clampText(text, cls, lines) {
   const p = h("div", { class: `msg ${cls} clamp${lines}` }, text), wrap = h("div", {}, p);
@@ -790,6 +805,7 @@ function turnCard(t) {
   if (t.you) lines.push(h("div", { class: "line" }, h("div", { class: "who-ic you" }, "YOU"), clampText(t.you, "you", 3)));
   if (t.reply) lines.push(h("div", { class: "line" }, h("div", { class: "who-ic ai" }, "AI"), clampText(t.reply, "ai", 2)));
   const badges = [h("span", {}, when(t.at)), h("span", { class: "badge" + (t.source === "Added by you" ? " mine" : "") }, t.source)];
+  if (t.project && (S.projects || []).length > 1) badges.push(h("span", { class: "badge", title: "project" }, t.project));
   if (t.automatic) badges.push(h("span", { class: "badge auto" }, `Automatic · ${t.automatic}`));
   const acts = h("div", { class: "acts" });
   const del = h("button", { class: "icon-btn", title: "Delete", onclick: () => {
@@ -812,7 +828,10 @@ function renderList() {
 }
 async function remove(ids, card) {
   try {
-    await api("/portal/api/memories/delete", { body: { ids } });
+    // Deletes are per project: group the ids by the project their turn lives in.
+    const byProject = {};
+    for (const t of S.turns) for (const id of t.ids) if (ids.includes(id)) (byProject[t.project || ""] ||= []).push(id);
+    for (const [project, pids] of Object.entries(byProject)) await api("/portal/api/memories/delete", { body: { ids: pids, project } });
     card && card.remove();
     S.turns = S.turns.filter(t => !t.ids.some(id => ids.includes(id)));
     ids.forEach(id => S.sel.delete(id));
@@ -832,7 +851,8 @@ function renderSel() {
 async function recall(q) {
   const out = $("#recall-out"); out.replaceChildren(h("div", { class: "loading" }, h("span", { class: "spin" })));
   try {
-    const { items } = await api("/portal/api/recall", { body: { query: q } });
+    const project = $("#recall-project").classList.contains("hidden") ? "" : $("#recall-project").value;
+    const { items } = await api("/portal/api/recall", { body: { query: q, project } });
     out.replaceChildren();
     if (!S.me.namespaces[0].enabled) out.append(h("div", { class: "banner" }, "Memory is paused, so right now nothing would actually be recalled. This is what would be, once it's on."));
     if (!items.length) { out.append(h("div", { class: "empty" }, h("h3", {}, "Nothing would be recalled"), h("div", {}, "The assistant would answer this without any memory."))); return; }
@@ -869,7 +889,12 @@ for (const tab of $$(".tab")) tab.addEventListener("click", () => {
   for (const id of ["access", "memories", "recall", "admin"]) $(`#t-${id}`).classList.toggle("hidden", id !== S.tab);
   if (S.tab === "access") loadHistory();
   if (S.tab === "admin") loadAdmin();
-  if (S.tab === "recall") $("#recall-q").focus();
+  if (S.tab === "recall") {
+    const many = (S.projects || []).length > 1, sel = $("#recall-project");
+    sel.classList.toggle("hidden", !many);
+    if (many && !sel.options.length) projectOptions(sel, S.me.namespaces[0].project_id);
+    $("#recall-q").focus();
+  }
 });
 $("#filter").addEventListener("input", e => { S.q = e.target.value; renderList(); renderSel(); });
 $("#select-btn").addEventListener("click", () => { S.selecting = !S.selecting; S.sel.clear(); renderList(); renderSel(); });
@@ -880,14 +905,24 @@ $("#sel-del").addEventListener("click", async () => {
   if (!ids.length || !confirm(`Delete ${visible().filter(t => t.ids.every(id => S.sel.has(id))).length} selected memories?`)) return;
   await remove(ids, null); S.selecting = false; renderList(); renderSel();
 });
-$("#auto-clean").addEventListener("click", () => remove(S.turns.filter(t => t.automatic).flatMap(t => t.ids), null));
-$("#add-btn").addEventListener("click", () => { $("#add-text").value = ""; $("#dlg-add").showModal(); $("#add-text").focus(); });
+$("#auto-clean").addEventListener("click", () => remove(S.turns.filter(t => t.automatic && inProject(t)).flatMap(t => t.ids), null));
+function projectOptions(sel, current) {
+  sel.replaceChildren(...(S.projects || [S.me.namespaces[0].project_id]).map(p => h("option", { value: p, selected: p === current }, p)));
+}
+$("#add-btn").addEventListener("click", () => {
+  $("#add-text").value = "";
+  const many = (S.projects || []).length > 1;
+  $("#add-project-row").classList.toggle("hidden", !many);
+  if (many) projectOptions($("#add-project"), S.project === "all" ? S.me.namespaces[0].project_id : S.project);
+  $("#dlg-add").showModal(); $("#add-text").focus();
+});
 $("#add-form").addEventListener("submit", async e => {
   if (e.submitter && e.submitter.value !== "save") return;
   e.preventDefault();
   const text = $("#add-text").value.trim(); if (!text) return;
   $("#add-save").disabled = true;
-  try { await api("/portal/api/memories/add", { body: { text } }); $("#dlg-add").close(); toast("Saved; it may take a few seconds to be searchable"); await loadTurns(); refreshMe(); }
+  const project = (S.projects || []).length > 1 ? $("#add-project").value : "";
+  try { await api("/portal/api/memories/add", { body: { text, project } }); $("#dlg-add").close(); toast("Saved; it may take a few seconds to be searchable"); await loadTurns(); refreshMe(); }
   catch (err) { toast(err.message); }
   finally { $("#add-save").disabled = false; }
 });
