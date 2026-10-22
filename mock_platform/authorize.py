@@ -33,7 +33,8 @@ Rules, in order. Each refusal names the step that failed.
    personal key. Otherwise the key was reassigned.        403 key-reassigned
    An app key names nobody: the assertion is required and verified
    here with that app's own secret and issuer.                      401
-   The person is the token's email, which must be enrolled.     not enrolled
+   The person is the token's email, which must be enrolled (or, with
+   auto-enrolment, known to Corp SSO: enrol.py).                not enrolled
    The hook must name that person in X-MemMachine-User, with a value the token
    itself carries: their employee ID, or their email when they have none.
    A display name someone edited to another employee's ID fails here.  403
@@ -79,6 +80,9 @@ ENDPOINT_NOT_ALLOWED = "endpoint-not-allowed"
 KEY_REASSIGNED = "key-reassigned"
 # The person is enrolled but the project the hook proposed is not theirs to use.
 PROJECT_NOT_GRANTED = "project-not-granted"
+# The one refusal the app may answer by enrolling the person (see enrol.py):
+# the token verified, its email is just not in the registry.
+TOKEN_USER_UNKNOWN = "token user not registered"
 
 # Clock difference allowed between Open WebUI, which stamps the token, and here.
 LEEWAY_SECONDS = 30
@@ -174,7 +178,7 @@ def authorize(registry: Registry, headers, now: Optional[float] = None,
         ctx["email"] = claims["email"]
         user = registry.user_by_email(claims["email"])
         if user is None:
-            raise Denied(403, "token user not registered", NOT_ENROLLED, **ctx)
+            raise Denied(403, TOKEN_USER_UNKNOWN, NOT_ENROLLED, **ctx)
         if not claimed:
             raise Denied(401, "a frontend key must name the user", **ctx)
         carried = {str(claims.get(c) or "").strip() for c in ("email", "name")} - {""}

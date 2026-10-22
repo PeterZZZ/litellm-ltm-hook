@@ -141,17 +141,29 @@ class Keycloak:
 
     async def person(self, email: str) -> Optional[Person]:
         """The directory entry for this email, or None if Corp SSO has no such person."""
+        email = email.strip()
+        return await self._find({"email": email, "exact": "true"},
+                                lambda p: p.email.lower() == email.lower())
+
+    async def person_by_employee_id(self, employee_id: str) -> Optional[Person]:
+        """The directory entry with this employee ID (an attribute search)."""
+        employee_id = employee_id.strip()
+        return await self._find({"q": f"employee_id:{employee_id}", "exact": "true"},
+                                lambda p: (p.employee_id or "").lower() == employee_id.lower())
+
+    async def _find(self, params: dict, match) -> Optional[Person]:
         token = await self._service_token()
         async with self._client() as c:
-            r = await c.get(f"{self.admin_base}/users",
-                            params={"email": email.strip(), "exact": "true"},
+            r = await c.get(f"{self.admin_base}/users", params=params,
                             headers={"Authorization": f"Bearer {token}"})
         r.raise_for_status()
         for u in r.json():
-            if str(u.get("email") or "").lower() == email.strip().lower():
-                attrs = u.get("attributes") or {}
-                emp = (attrs.get("employee_id") or [None])[0]
-                name = " ".join(x for x in (u.get("firstName"), u.get("lastName")) if x)
-                return Person(email=u["email"], employee_id=emp, name=name,
-                              enabled=bool(u.get("enabled", True)))
+            if not u.get("email"):
+                continue
+            attrs = u.get("attributes") or {}
+            emp = (attrs.get("employee_id") or [None])[0]
+            name = " ".join(x for x in (u.get("firstName"), u.get("lastName")) if x)
+            p = Person(email=u["email"], employee_id=emp, name=name, enabled=bool(u.get("enabled", True)))
+            if match(p):
+                return p
         return None

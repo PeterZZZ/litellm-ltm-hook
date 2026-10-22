@@ -108,6 +108,9 @@ _MIGRATIONS = (
     ("keys", "enabled", "INTEGER NOT NULL DEFAULT 1"),
     ("users", "employee_id", "TEXT"),
     ("apps", "owner", "TEXT"),
+    # NULL = created by an admin or the CLI; else how the person enrolled
+    # themselves on first use ("openwebui", "personal-key", "portal").
+    ("users", "enrolled_by", "TEXT"),
 )
 AUDIT_KEEP = 5000
 ROLES = ("user", "admin")
@@ -148,6 +151,7 @@ class User:
     allow_app: bool = True
     created_at: Optional[float] = None
     employee_id: Optional[str] = None
+    enrolled_by: Optional[str] = None
     grants: tuple[str, ...] = ()
 
     @property
@@ -340,7 +344,7 @@ class Registry:
         return credential
 
     def add_user(self, email: str, project_id: str = "default", role: str = "user",
-                 employee_id: Optional[str] = None) -> User:
+                 employee_id: Optional[str] = None, enrolled_by: Optional[str] = None) -> User:
         if role not in ROLES:
             raise ValueError(f"role must be one of {ROLES}")
         email = email.strip()
@@ -349,9 +353,9 @@ class Registry:
         with self._db:
             self._db.execute(
                 "INSERT INTO users (user_id, email, employee_id, org_id, project_id, role, "
-                "created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                "created_at, enrolled_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
                 (user_id, email, employee_id, slug(employee_id or email), project_id, role,
-                 time.time()),
+                 time.time(), enrolled_by or None),
             )
             self._db.execute("INSERT INTO grants (user_id, project) VALUES (?, ?)",
                              (user_id, project_id))
@@ -473,7 +477,8 @@ class Registry:
             "services": q("SELECT label FROM services ORDER BY label"),
             "users": [{"user_id": u.user_id, "email": u.email, "employee_id": u.employee_id,
                        "role": u.role, "org_id": u.org_id, "project_id": u.project_id,
-                       "grants": list(u.grants), "enabled": u.enabled, "allow_app": u.allow_app}
+                       "grants": list(u.grants), "enabled": u.enabled, "allow_app": u.allow_app,
+                       "enrolled_by": u.enrolled_by}
                       for u in self.users()],
             "keys": q(
                 "SELECT label, kind, user_id, enabled, substr(key_hash, 1, 12) AS key_hash "

@@ -22,8 +22,10 @@ would never send (a wrong key owner, a project that disagrees with the body, a
 path the hook does not call) speak to the platform directly as that LiteLLM.
 LITELLM_MASTER_KEY creates, blocks, reassigns and deletes the throwaway keys the
 key-linking checks need; everything it creates is named after the run and
-deleted at the end. Expected: alice (E12345) and bob (E67890) enrolled, carol (E24680) not; the hook
-names Open WebUI users by the token's name claim, which SSO sets to the employee ID.
+deleted at the end. Expected: alice (E12345) and bob (E67890) enrolled; carol (E24680) has a
+Corp SSO login and a LiteLLM key but no platform account, so her first chat is the
+self-enrolment check (her account is deleted again at the end); the hook names Open
+WebUI users by the token's name claim, which SSO sets to the employee ID.
 """
 import hashlib
 import json
@@ -193,11 +195,13 @@ check("bob via Open WebUI: not recalled", s == 200 and FACT not in a, a)
 s, a = chat(LL, keys["ALICE_VIRTUAL_KEY"], QUESTION)
 check("alice's personal key, directly: same namespace, recalled", s == 200 and FACT in a, a)
 
+# Carol has never been enrolled. Corp SSO knows her, so her first chat enrols her
+# (Leo, Oct 22): memory on, her own empty namespace, nothing of alice's.
 s, a = chat(OW, carol, QUESTION)
-check("carol (not enrolled) via Open WebUI: chat works, no memory", s == 200 and FACT not in a, a)
+check("carol, never enrolled, via Open WebUI: chat works, her own (empty) memory", s == 200 and FACT not in a, a)
 
 s, a = chat(LL, keys["CAROL_VIRTUAL_KEY"], QUESTION)
-check("carol's personal key (not registered): chat works, no memory", s == 200 and FACT not in a, a)
+check("carol's personal key: served in her namespace, not alice's", s == 200 and FACT not in a, a)
 
 s, a = chat(LL, keys["OPENWEBUI_APP_KEY"], QUESTION)
 check("app key with no user token: chat works, no memory", s == 200 and FACT not in a, a)
@@ -280,6 +284,21 @@ if os.environ.get("PLATFORM_DB"):
     from mock_platform.registry import Registry
 
     reg = Registry(os.environ["PLATFORM_DB"])
+
+    # ---- self-enrolment: what carol's first chat did ----
+    carol_acct = reg.user_by_email("carol@corp.example")
+    enrol_rows = [r for r in reg.audit(300) if r["op"] == "enrol" and r["email"] == "carol@corp.example"]
+    check("carol was enrolled on her first chat: employee ID from Corp SSO, default project, audit says enrol",
+          carol_acct is not None and carol_acct.employee_id == "E24680" and carol_acct.grants == ("default",)
+          and carol_acct.enrolled_by == "openwebui" and any(r["decision"] == "allow" for r in enrol_rows),
+          f"account={carol_acct and (carol_acct.employee_id, carol_acct.grants, carol_acct.enrolled_by)} enrol rows={len(enrol_rows)}")
+    check("carol's personal key linked itself once she existed",
+          reg.key(hashlib.sha256(keys["CAROL_VIRTUAL_KEY"].encode()).hexdigest()) is not None, "")
+    ghost = f"ghost-{RUN}@corp.example"
+    s, d, body = platform("/api/v2/memories/search", {**SEARCH, "org_id": f"ghost_{RUN}_corp_example"},
+                          owner=APP_OWNER, token=mint(ghost), user=ghost, key=keys["OPENWEBUI_APP_KEY"], project="default")
+    check("a signed token for someone Corp SSO does not know: not-enrolled, nobody created",
+          s == 403 and d == "not-enrolled" and reg.user_by_email(ghost) is None, f"{s} {d} {body}")
 
     # ---- grants: one org per person, one or more projects inside it ----
     PROJECT = f"research-{RUN}"
@@ -408,6 +427,12 @@ if os.environ.get("PLATFORM_DB"):
         reg.set_enabled("alice@corp.example", True)
     s, a = chat(OW, alice, QUESTION)
     check("alice switched back on: recalled again", s == 200 and FACT in a, a)
+
+if os.environ.get("PLATFORM_DB") and reg.user_by_email("carol@corp.example") is not None:
+    # Put carol back the way the next run expects her: no account, no memories.
+    gone = portal_as("admin@corp.example")("/portal/api/admin/users/delete",
+                                           {"email": "carol@corp.example", "delete_memories": True})
+    print(f"(removed carol's self-enrolled account again; memories deleted: {gone.get('memories_deleted')})")
 
 print(f"\n{sum(results)}/{len(results)} passed")
 sys.exit(0 if all(results) else 1)

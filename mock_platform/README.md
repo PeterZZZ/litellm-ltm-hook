@@ -79,7 +79,7 @@ assumes.
 | Personal key switched off by its owner, or Open WebUI access switched off | 403 not-enrolled |
 | App key without a token | 401 |
 | App key, token fails signature / issuer / expiry / has no email | 401 |
-| App key, token's email not registered | 403 not-enrolled |
+| App key, token's email not registered and not in Corp SSO either | 403 not-enrolled (someone SSO knows is enrolled on the spot and served) |
 | App key without `X-MemMachine-User` | 401 |
 | `X-MemMachine-User` not in the token, or not the token's person | 403 |
 | User disabled | 403 not-enrolled |
@@ -264,8 +264,19 @@ The Memories and "What would it recall?" tabs are unchanged.
 - the audit log: every authorization decision and admin action, filterable.
 
 Bootstrap the first admin with the CLI: `user add admin@corp.example --role admin
---employee-id E10000`. There is no self-enrolment: a person without an account is
-told who the admins are.
+--employee-id E10000`.
+
+**Enrolment on first use** (`MOCK_PLATFORM_AUTO_ENROL=1`, the default when Corp
+SSO is configured): a person the registry does not know, arriving with a valid
+Open WebUI token, a personal key whose LiteLLM owner names them, or a portal
+sign-in, is looked up in the Corp SSO directory. Someone the directory knows
+and has not disabled is created on the spot with the employee ID the directory
+holds and a `default` project, and that same request is served. Signing in
+through Corp SSO is what proves membership, so no admin step is needed; the
+audit log says `enrol` and the Admin tab marks the account self-enrolled. A
+failed lookup is remembered for 60 s. With `MOCK_PLATFORM_AUTO_ENROL=0`, or
+without a directory, a person without an account gets no memory until an admin
+creates one, and the portal tells them who the admins are.
 
 Every route acts on the signed-in person's namespace, taken from the registry,
 never from the browser; deletes re-check each id against that namespace first.

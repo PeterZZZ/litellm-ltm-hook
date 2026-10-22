@@ -22,9 +22,9 @@ An app key is shared by everyone behind that app, so it is suspended rather
 than dropped: its registration stays, it is refused while LiteLLM names anyone
 but its service user, and it serves again as soon as that is put right.
 
-What is deliberately not here: creating a person the first time an unknown
-owner turns up (Crystal's "default space for everyone"). That is Leo's
-decision; `person_for_unknown_owner` is where it would go.
+An owner the registry does not know is offered to `enrol` (enrol.py): with
+Corp SSO configured, a person the directory knows is created on the spot and
+the key linked to them in the same call (decided Oct 22).
 """
 from __future__ import annotations
 
@@ -32,7 +32,7 @@ import logging
 import sqlite3
 import time
 from datetime import datetime, timezone
-from typing import Callable, Optional
+from typing import Awaitable, Callable, Optional
 
 import httpx
 
@@ -59,6 +59,8 @@ class KeyLinker:
         self.miss_seconds = miss_seconds
         self.now = now
         self._misses: dict[str, float] = {}  # key hash -> when the miss may be retried
+        # Set by the app: enrols an owner the registry does not know (enrol.py).
+        self.enrol: Optional[Callable[[str, str], Awaitable[Optional[User]]]] = None
 
     @property
     def configured(self) -> bool:
@@ -114,7 +116,7 @@ class KeyLinker:
                 return f"{litellm_owner!r} is a service user, not a person"
         user = self._person(litellm_owner)
         if user is None:
-            user = self.person_for_unknown_owner(litellm_owner, info)
+            user = await self.person_for_unknown_owner(litellm_owner, info)
         if user is None:
             known = self.registry.user_by_person(litellm_owner)
             if known is not None:
@@ -144,14 +146,14 @@ class KeyLinker:
             return None
         return user
 
-    def person_for_unknown_owner(self, litellm_owner: str, info: dict) -> Optional[User]:
-        """Where creating a person for an owner the registry does not know would go.
-
-        Crystal asked for a default space for everyone without an admin step;
-        whether the platform does that is Leo's decision. Until then an unknown
-        owner stays not enrolled.
-        """
-        return None
+    async def person_for_unknown_owner(self, litellm_owner: str, info: dict) -> Optional[User]:
+        """A person for an owner the registry does not know: enrol them if Corp
+        SSO knows them, else nobody. The owner must then be named the way the
+        platform names people, which the caller checks again."""
+        if self.enrol is None:
+            return None
+        user = await self.enrol(litellm_owner, "personal-key")
+        return user if user is not None and self._person(litellm_owner) is not None else None
 
     # ---- every few minutes, and on request ----
 

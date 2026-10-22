@@ -49,7 +49,7 @@ from .registry import ANY_PROJECT, Registry, User, _ORG_ID_ALLOWED as _BAD_PROJE
 COOKIE = "mm_portal"
 # Bumped whenever the page and these routes change together. A tab still running
 # an older page sees a different value and reloads itself instead of breaking.
-UI_VERSION = "2026-10-22.1"
+UI_VERSION = "2026-10-22.2"
 SESSION_SECONDS = 8 * 60 * 60
 LOGIN_SECONDS = 10 * 60  # how long a sign-in may sit at Keycloak
 STATE_COOKIE = "mm_portal_login"
@@ -79,6 +79,7 @@ def mount_portal(
     litellm_key: Optional[str] = None,
     sso=None,
     linker=None,
+    enroller=None,
 ) -> None:
     owui_url = (owui_url or "").rstrip("/") or None
     litellm_url = (litellm_url or "").rstrip("/") or None
@@ -278,6 +279,7 @@ def mount_portal(
             "enabled": user.enabled,
             "allow_app": user.allow_app, "namespace": f"{user.org_id}/{user.project_id}",
             "org_id": user.org_id, "grants": list(user.grants),
+            "enrolled_by": user.enrolled_by,
             "keys": [{"label": k.label, "enabled": k.enabled, "hash": k.key_hash[:12]} for k in keys],
             "created_at": user.created_at, "last_seen": seen.get(user.email.lower()),
         }
@@ -396,6 +398,9 @@ def mount_portal(
         via = ("Corp SSO (Keycloak), ID token verified" if entry.get("via") == "sso"
                else "Open WebUI password check")
         user = registry.user_by_email(email)
+        if user is None and entry.get("via") == "sso" and enroller is not None and enroller.configured:
+            # Signed in through Corp SSO: that is membership, so enrol them here too.
+            user = await enroller.by_email(email, "portal")
         if user is None:
             admins = [u.email for u in registry.users() if u.is_admin]
             return {"email": email, "name": name, "enrolled": False, "admins": admins,
@@ -573,8 +578,11 @@ def mount_portal(
     async def admin_users(request: Request):
         admin(request)
         seen = registry.last_seen()
-        return {"users": [account(u, seen) for u in registry.users()],
-                "litellm_lookup": bool(litellm_url and litellm_key)}
+        users = registry.users()
+        return {"users": [account(u, seen) for u in users],
+                "litellm_lookup": bool(litellm_url and litellm_key),
+                "auto_enrol": bool(enroller is not None and enroller.configured),
+                "self_enrolled": sum(1 for u in users if u.enrolled_by)}
 
     @app.post("/portal/api/admin/users")
     async def admin_create(request: Request):
@@ -705,7 +713,8 @@ def mount_portal(
                          "Open WebUI password check (portal); ")
                         + "Open WebUI's signed HS256 token (chat)",
             "sso": ({"issuer": sso.issuer, "client": sso.client_id,
-                     "directory": "service account, realm-management/view-users (read-only)"}
+                     "directory": "service account, realm-management/view-users (read-only)",
+                     "auto_enrol": bool(enroller is not None and enroller.configured)}
                     if sso else None),
         }
 
