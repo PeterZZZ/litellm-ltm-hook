@@ -368,7 +368,7 @@ the master key). Unit tests, no network:
 uv run --group platform pytest -q test_hook.py test_platform.py test_portal.py test_sso.py test_linking.py
 ```
 
-Last tested at commit `e839a82` (rows 7, 9, 2, 3, the portal fixes, and the hook adapters from PR #1: 41/41 plus a Claude Code round trip)
+Last tested at commit `d8908f8` (rows 7, 9, 2, 3, 12, the hook adapters from PR #1, every project in the Memories tab, and self-enrolment on first use: 44/44 plus a Claude Code round trip)
 on branch `feat/mock-platform`; the shared VM should run that or later.
 
 To use it from a laptop, forward every port the browser touches; Keycloak's
