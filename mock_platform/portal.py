@@ -44,12 +44,12 @@ import jwt
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, Response
 
-from .registry import ANY_PROJECT, Registry, User, _ORG_ID_ALLOWED as _BAD_PROJECT
+from .registry import ANY_PROJECT, Namespace, Registry, User, _ORG_ID_ALLOWED as _BAD_PROJECT
 
 COOKIE = "mm_portal"
 # Bumped whenever the page and these routes change together. A tab still running
 # an older page sees a different value and reloads itself instead of breaking.
-UI_VERSION = "2026-10-22.2"
+UI_VERSION = "2026-10-22.3"
 SESSION_SECONDS = 8 * 60 * 60
 LOGIN_SECONDS = 10 * 60  # how long a sign-in may sit at Keycloak
 STATE_COOKIE = "mm_portal_login"
@@ -144,38 +144,45 @@ def mount_portal(
             raise HTTPException(502, f"memory service error ({resp.status_code})")
         return resp.json() if resp.content else {}
 
-    def project_of(user: User, requested) -> str:
-        """Which of the person's granted projects a memory route works in.
-
-        `requested` is the body's or query's `project`; empty means their
-        default. Anything not granted is refused, so a route can never reach
-        a namespace the person does not hold.
+    def ns_of(user: User, requested) -> Namespace:
+        """Where a memory route works: the namespace behind the project name
+        the person sent (`project` in the body or query; empty = their default).
+        A name that is neither granted in their org nor shared with them is
+        refused, so a route can never reach a namespace the person does not hold.
         """
-        project = str(requested or "").strip() or user.project_id
-        if not user.allows(project) or (project != user.project_id and _BAD_PROJECT.search(project)):
-            raise HTTPException(403, f"project {project!r} is not one of yours")
-        return project
+        name = str(requested or "").strip() or user.project_id
+        ns = user.resolve(name) if (name == user.project_id or not _BAD_PROJECT.search(name)) else None
+        if ns is None:
+            raise HTTPException(403, f"project {name!r} is not one of yours")
+        return ns
 
     def projects_of(user: User) -> list[str]:
-        """Every project the person holds by name, default first. `*` cannot
-        be listed: core is only asked about projects named here."""
-        return [user.project_id] + sorted(
+        """Every project name the person holds: their own, default first, then
+        the aliases of projects shared with them. `*` cannot be listed: core
+        is only asked about projects named here."""
+        own = [user.project_id] + sorted(
             g for g in user.grants if g not in (user.project_id, ANY_PROJECT))
+        return own + sorted(sh.alias for sh in user.shares)
 
-    async def episode_count(user: User, project: Optional[str] = None) -> int:
+    def mine(user: User, ep: dict) -> bool:
+        """Did this person write (or receive) this stored message?"""
+        return user.org_id in (ep.get("producer_id"), ep.get("produced_for_id"),
+                               (ep.get("metadata") or {}).get("user_id"))
+
+    async def episode_count(ns: Namespace) -> int:
         try:
             got = await core("/api/v2/projects/episode_count/get",
-                             {"org_id": user.org_id, "project_id": project or user.project_id})
+                             {"org_id": ns.org_id, "project_id": ns.project_id})
             return int(got.get("count", 0))
         except HTTPException:
             return 0
 
-    async def all_episodes(user: User, project: Optional[str] = None) -> list[dict]:
-        ns = {"org_id": user.org_id, "project_id": project or user.project_id}
+    async def all_episodes(ns: Namespace) -> list[dict]:
         out: list[dict] = []
         page = 0
         while len(out) < MAX_EPISODES:
-            body = await core("/api/v2/memories/list", {**ns, "page_size": _PAGE, "page_num": page})
+            body = await core("/api/v2/memories/list", {"org_id": ns.org_id, "project_id": ns.project_id,
+                                                        "page_size": _PAGE, "page_num": page})
             batch = (body.get("content") or {}).get("episodic_memory") or []
             out.extend(batch)
             if len(batch) < _PAGE:
@@ -183,13 +190,15 @@ def mount_portal(
             page += 1
         return out
 
-    async def delete_ids(user: User, ids: list[str], project: Optional[str] = None) -> int:
-        project = project or user.project_id
-        owned = {str(e.get("uid")) for e in await all_episodes(user, project)}
-        ids = [i for i in dict.fromkeys(str(i) for i in ids) if i in owned]
+    async def delete_ids(user: User, ids: list[str], ns: Namespace) -> int:
+        """Delete these ids from the namespace. In a project shared with the
+        person, only the messages they wrote themselves; the owner deletes any."""
+        episodes = await all_episodes(ns)
+        allowed = {str(e.get("uid")) for e in episodes if not ns.shared or mine(user, e)}
+        ids = [i for i in dict.fromkeys(str(i) for i in ids) if i in allowed]
         for start in range(0, len(ids), 100):
             await core("/api/v2/memories/episodic/delete", {
-                "org_id": user.org_id, "project_id": project,
+                "org_id": ns.org_id, "project_id": ns.project_id,
                 "episodic_ids": ids[start:start + 100],
             })
         return len(ids)
@@ -280,9 +289,28 @@ def mount_portal(
             "allow_app": user.allow_app, "namespace": f"{user.org_id}/{user.project_id}",
             "org_id": user.org_id, "grants": list(user.grants),
             "enrolled_by": user.enrolled_by,
+            "shared_out": registry.shared_out(user.user_id),
+            "shared_in": [f"{sh.alias} = {sh.owner_org}/{sh.project}" for sh in user.shares],
             "keys": [{"label": k.label, "enabled": k.enabled, "hash": k.key_hash[:12]} for k in keys],
             "created_at": user.created_at, "last_seen": seen.get(user.email.lower()),
         }
+
+    async def namespaces_of(user: User) -> list[dict]:
+        shared_out = registry.shared_out(user.user_id)
+        rows = []
+        for project in [user.project_id] + sorted(
+                g for g in user.grants if g not in (user.project_id, ANY_PROJECT)):
+            rows.append({"name": project, "org_id": user.org_id, "project_id": project,
+                         "kind": "Personal", "enabled": user.enabled, "shared": False,
+                         "members": shared_out.get(project, 0),
+                         "episodes": await episode_count(Namespace(user.org_id, project, user.user_id))})
+        for sh in user.shares:
+            rows.append({"name": sh.alias, "org_id": sh.owner_org, "project_id": sh.project,
+                         "kind": "Shared", "enabled": user.enabled, "shared": True, "new": not sh.seen,
+                         "owner": {"email": sh.owner_email, "person_id": sh.owner_person},
+                         "shared_by": sh.shared_by, "at": sh.at,
+                         "episodes": await episode_count(Namespace(sh.owner_org, sh.project, sh.owner_id, True))})
+        return rows
 
     # ---------- pages ----------
 
@@ -410,14 +438,9 @@ def mount_portal(
             "email": email, "name": name, "enrolled": True, "role": user.role, "ui": UI_VERSION,
             "employee_id": user.employee_id, "sso_employee_id": entry.get("employee_id"),
             "signed_in_via": via,
-            # One row per granted project, the default first. `*` cannot be
-            # listed: core is only asked about projects named here.
-            "namespaces": [{
-                "name": project, "org_id": user.org_id, "project_id": project,
-                "kind": "Personal", "enabled": user.enabled,
-                "episodes": await episode_count(user, project),
-            } for project in [user.project_id] + sorted(
-                g for g in user.grants if g not in (user.project_id, ANY_PROJECT))],
+            # One row per project name the person holds: their own (default
+            # first), then projects shared with them. `*` cannot be listed.
+            "namespaces": await namespaces_of(user),
             "grants": list(user.grants),
             "access": access_paths(user),
         }
@@ -466,6 +489,109 @@ def mount_portal(
         user = change_grant(user, str(body.get("project") or ""), False, by=user, allow_any=False)
         return {"grants": list(user.grants)}
 
+    # ---------- sharing: the owner shares a project of their org; members use it by alias ----------
+
+    def own_shareable(user: User, project: str) -> str:
+        project = str(project or "").strip()
+        if not project or project == user.project_id:
+            raise HTTPException(400, "the default project is personal; share another project")
+        if not user.allows(project) or _BAD_PROJECT.search(project):
+            raise HTTPException(403, f"project {project!r} is not one of yours to share")
+        return project
+
+    async def person_for_share(who: str) -> tuple[Optional[User], str]:
+        """Resolve an email or employee ID to a person: enrolled already, or
+        known to Corp SSO (enrolled now, Oct 22 policy), or nobody."""
+        found = registry.user_by_person(who)
+        if found is not None:
+            return found, "shared"
+        if enroller is not None and enroller.configured:
+            found = await (enroller.by_email(who, "share") if "@" in who
+                           else enroller.by_person(who, "share"))
+            if found is not None:
+                return found, "shared and enrolled"
+        return None, "not found: not enrolled and not in Corp SSO"
+
+    @app.post("/portal/api/projects/share")
+    async def project_share(request: Request):
+        """Share one of my projects with people named by email or employee ID."""
+        owner = enrolled(request, write=True)
+        body = await body_of(request)
+        project = own_shareable(owner, body.get("project"))
+        people = [w.strip() for w in re.split(r"[,\s;]+", str(body.get("people") or "")) if w.strip()]
+        if not people:
+            raise HTTPException(400, "name at least one person by email or employee ID")
+        results = []
+        for who in people[:50]:
+            member, status = await person_for_share(who)
+            if member is None:
+                results.append({"who": who, "status": status})
+                continue
+            try:
+                sh = registry.share(owner.email, project, member.email, by=owner.email)
+            except ValueError as exc:
+                results.append({"who": who, "status": str(exc)})
+                continue
+            results.append({"who": who, "status": status, "email": member.email, "alias": sh.alias})
+            registry.record(op="share", decision="allow", status=200, email=member.email,
+                            namespace=f"{owner.org_id}/{project}",
+                            reason=f"{owner.email} shared {owner.org_id}/{project} with {member.email} "
+                                   f"as {sh.alias}" + ("; enrolled for it" if "enrolled" in status else ""))
+        return {"project": project, "results": results,
+                "members": registry.members_of(owner.user_id, project)}
+
+    @app.get("/portal/api/projects/members")
+    async def project_members(request: Request):
+        owner = enrolled(request)
+        project = own_shareable(owner, request.query_params.get("project"))
+        return {"project": project, "members": registry.members_of(owner.user_id, project)}
+
+    @app.post("/portal/api/projects/unshare")
+    async def project_unshare(request: Request):
+        owner = enrolled(request, write=True)
+        body = await body_of(request)
+        project = own_shareable(owner, body.get("project"))
+        member = registry.user_by_person(str(body.get("email") or ""))
+        if member is None or not registry.unshare(owner.email, project, member.email):
+            raise HTTPException(404, "not shared with that person")
+        registry.record(op="unshare", decision="allow", status=200, email=member.email,
+                        namespace=f"{owner.org_id}/{project}",
+                        reason=f"{owner.email} stopped sharing {owner.org_id}/{project} with {member.email}")
+        return {"project": project, "members": registry.members_of(owner.user_id, project)}
+
+    @app.post("/portal/api/projects/leave")
+    async def project_leave(request: Request):
+        """Give up a project someone shared with me. Its memories stay theirs."""
+        user = enrolled(request, write=True)
+        body = await body_of(request)
+        sh = registry.leave(user.email, str(body.get("project") or ""))
+        if sh is None:
+            raise HTTPException(404, "no such shared project")
+        registry.record(op="leave", decision="allow", status=200, email=user.email,
+                        namespace=f"{sh.owner_org}/{sh.project}",
+                        reason=f"{user.email} left {sh.owner_org}/{sh.project} (alias {sh.alias})")
+        return {"ok": True}
+
+    @app.post("/portal/api/projects/rename")
+    async def project_rename(request: Request):
+        """Rename the alias I use for a shared project."""
+        user = enrolled(request, write=True)
+        body = await body_of(request)
+        try:
+            sh = registry.rename_share(user.email, str(body.get("project") or ""), str(body.get("to") or ""))
+        except KeyError:
+            raise HTTPException(404, "no such shared project") from None
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from None
+        return {"alias": sh.alias, "namespace": f"{sh.owner_org}/{sh.project}"}
+
+    @app.post("/portal/api/projects/seen")
+    async def project_seen(request: Request):
+        user = enrolled(request, write=True)
+        body = await body_of(request)
+        registry.mark_share_seen(user.user_id, str(body.get("project") or ""))
+        return {"ok": True}
+
     @app.post("/portal/api/access")
     async def access(request: Request):
         user = enrolled(request, write=True)
@@ -494,26 +620,36 @@ def mount_portal(
         person holds (`all`, the default), each turn tagged with its project."""
         user = enrolled(request)
         wanted = str(request.query_params.get("project") or "all").strip()
-        projects = projects_of(user) if wanted == "all" else [project_of(user, wanted)]
-        found = await asyncio.gather(*(all_episodes(user, p) for p in projects))
-        turns = [t for p, eps in zip(projects, found) for t in _turns(eps, project=p)]
+        projects = projects_of(user) if wanted == "all" else [wanted]
+        spaces = [ns_of(user, p) for p in projects]
+        found = await asyncio.gather(*(all_episodes(ns) for ns in spaces))
+        turns = []
+        for name, ns, eps in zip(projects, spaces, found):
+            for t in _turns(eps, project=name):
+                t["shared"] = ns.shared
+                t["mine"] = not ns.shared or any(mine(user, e) for e in eps if str(e.get("uid")) in t["ids"])
+                turns.append(t)
+            if ns.shared and wanted != "all":
+                registry.mark_share_seen(user.user_id, name)
         turns.sort(key=lambda t: t["at"] or "", reverse=True)
-        return {"projects": projects, "turns": turns}
+        shared = {sh.alias: {"owner": sh.owner_person, "namespace": f"{sh.owner_org}/{sh.project}"}
+                  for sh in user.shares}
+        return {"projects": projects, "shared": shared, "turns": turns}
 
     @app.post("/portal/api/memories/delete")
     async def delete(request: Request):
         user = enrolled(request, write=True)
         body = await body_of(request)
-        project = project_of(user, body.get("project"))
-        return {"deleted": await delete_ids(user, list(body.get("ids") or []), project)}
+        ns = ns_of(user, body.get("project"))
+        return {"deleted": await delete_ids(user, list(body.get("ids") or []), ns)}
 
     @app.post("/portal/api/memories/clear")
     async def clear(request: Request):
         user = enrolled(request, write=True)
         body = await body_of(request)
-        project = project_of(user, body.get("project"))
-        ids = [str(e.get("uid")) for e in await all_episodes(user, project)]
-        return {"deleted": await delete_ids(user, ids, project)}
+        ns = ns_of(user, body.get("project"))
+        ids = [str(e.get("uid")) for e in await all_episodes(ns)]
+        return {"deleted": await delete_ids(user, ids, ns)}
 
     @app.post("/portal/api/memories/add")
     async def add(request: Request):
@@ -524,15 +660,16 @@ def mount_portal(
             raise HTTPException(400, "nothing to remember")
         if len(text) > 4000:
             raise HTTPException(400, "keep it under 4000 characters")
-        project = project_of(user, body.get("project"))
-        await core("/api/v2/projects", {"org_id": user.org_id, "project_id": project,
+        ns = ns_of(user, body.get("project"))
+        await core("/api/v2/projects", {"org_id": ns.org_id, "project_id": ns.project_id,
                                         "description": "mock platform"})
         await core("/api/v2/memories", {
-            "org_id": user.org_id, "project_id": project, "types": [],
+            "org_id": ns.org_id, "project_id": ns.project_id, "types": [],
             "messages": [{
-                "content": text, "role": "user", "producer": user.user_id,
+                # Provenance as the platform states it for chats: the person's org.
+                "content": text, "role": "user", "producer": user.org_id,
                 "produced_for": "litellm",
-                "metadata": {"user_id": user.user_id, "session_id": user.user_id,
+                "metadata": {"user_id": user.person_id, "session_id": user.org_id,
                              "via": "manual", "source": "my-memory"},
             }],
         })
@@ -545,9 +682,9 @@ def mount_portal(
         query = str(body.get("query") or "").strip()
         if not query:
             raise HTTPException(400, "type something to look up")
-        project = project_of(user, body.get("project"))
+        ns = ns_of(user, body.get("project"))
         found = await core("/api/v2/memories/search", {
-            "org_id": user.org_id, "project_id": project,
+            "org_id": ns.org_id, "project_id": ns.project_id,
             "query": query, "top_k": 8, "types": ["episodic"],
         })
         episodic = (found.get("content") or {}).get("episodic_memory") or {}
@@ -560,17 +697,17 @@ def mount_portal(
     @app.get("/portal/api/export")
     async def export(request: Request):
         user = enrolled(request)
-        project = project_of(user, request.query_params.get("project"))
+        ns = ns_of(user, request.query_params.get("project"))
         data = {
             "exported_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
             "email": user.email,
-            "namespace": f"{user.org_id}/{project}",
-            "episodes": [_episode(e) for e in await all_episodes(user, project)],
+            "namespace": f"{ns.org_id}/{ns.project_id}",
+            "episodes": [_episode(e) for e in await all_episodes(ns)],
         }
         return Response(json.dumps(data, indent=2, ensure_ascii=False),
                         media_type="application/json",
                         headers={"Content-Disposition":
-                                 f'attachment; filename="memory-{user.org_id}-{project}.json"'})
+                                 f'attachment; filename="memory-{ns.org_id}-{ns.project_id}.json"'})
 
     # ---------- admin ----------
 
@@ -693,7 +830,10 @@ def mount_portal(
             raise HTTPException(400, "you cannot delete your own account")
         removed = 0
         if body.get("delete_memories"):
-            removed = await delete_ids(target, [str(e.get("uid")) for e in await all_episodes(target)])
+            # Every project of their own org; projects shared with them stay their owners'.
+            for project in [target.project_id] + [g for g in target.grants if g not in (target.project_id, ANY_PROJECT)]:
+                ns = Namespace(target.org_id, project, target.user_id)
+                removed += await delete_ids(target, [str(e.get("uid")) for e in await all_episodes(ns)], ns)
         registry.delete_user(target.email)
         registry.record(op="admin:delete", decision="allow", status=200, email=target.email,
                         reason=f"by {actor.email}; memories deleted: {removed}")

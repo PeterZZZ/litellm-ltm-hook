@@ -42,8 +42,9 @@ Rules, in order. Each refusal names the step that failed.
 7. The body's org_id must be the person's org.                      403
    X-MemMachine-Project is required and must equal the body's project_id;
    a missing header or a mismatch is a malformed request.           400
-   The project must be granted to the person (or their grants are `*`);
-   the namespace passed to core is <org>/<project>.    403 project-not-granted
+   The project must be granted to the person (or their grants are `*`), or
+   be the alias of a project shared with them; the namespace passed to core
+   is <org>/<project>, the owner's org when shared.    403 project-not-granted
 
 "Not enrolled" is 403 with `X-MemMachine-Decision: not-enrolled`. The hook treats
 that one answer as "memory is off for this person"; every other 401/403 is a
@@ -61,7 +62,7 @@ from typing import Optional
 
 import jwt
 
-from .registry import Registry, User
+from .registry import Namespace, Registry, User
 
 KEY_ID_HEADER = "x-memmachine-key-id"
 KEY_OWNER_HEADER = "x-memmachine-key-owner"
@@ -110,11 +111,13 @@ class Principal:
     key_label: str
     via: str  # "personal-key" or "app-token"
     client: str = ""
-    project_id: str = "default"  # the granted project this request works in
+    project_id: str = "default"  # the project this request works in
+    org_id: str = ""             # whose org it lives in: the person's, or a sharer's
+    shared: bool = False
 
-    @property
-    def org_id(self) -> str:
-        return self.user.org_id
+    def __post_init__(self):
+        if not self.org_id:
+            object.__setattr__(self, "org_id", self.user.org_id)
 
 
 def authorize(registry: Registry, headers, now: Optional[float] = None,
@@ -194,8 +197,10 @@ def authorize(registry: Registry, headers, now: Optional[float] = None,
     if not user.enabled:
         raise Denied(403, "user disabled", NOT_ENROLLED, **ctx)
 
-    # 7. The namespace the hook proposed.
-    project_id = user.project_id
+    # 7. The namespace the hook proposed: its org_id names the person (their
+    #    own org), its project is a name in that person's view, which may
+    #    resolve into someone else's org when the project was shared.
+    ns = Namespace(user.org_id, user.project_id, user.user_id)
     if body is not None:
         org_id = str(body.get("org_id") or "")
         project_id = str(body.get("project_id") or "")
@@ -207,11 +212,13 @@ def authorize(registry: Registry, headers, now: Optional[float] = None,
             raise Denied(400, "X-MemMachine-Project is required", **ctx)
         if header_project != project_id:
             raise Denied(400, "X-MemMachine-Project does not match the body's project_id", **ctx)
-        if not user.allows(project_id):
+        ns = user.resolve(project_id)
+        if ns is None:
             raise Denied(403, f"project {project_id!r} is not granted", PROJECT_NOT_GRANTED, **ctx)
+        ctx["namespace"] = f"{ns.org_id}/{ns.project_id}"
 
     return Principal(user=user, service=service, key_label=key.label, via=via, client=client,
-                     project_id=project_id)
+                     project_id=ns.project_id, org_id=ns.org_id, shared=ns.shared)
 
 
 def _same(a: str, b: str) -> bool:

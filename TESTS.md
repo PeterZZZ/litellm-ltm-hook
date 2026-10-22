@@ -14,7 +14,7 @@ Test files, in increasing scope:
 | `test_sso.py` | unit: Corp SSO in the portal (Keycloak code flow, ID-token checks, employee IDs from the directory) | `uv run --group platform`; no network |
 | `test_e2e_store.py` | end-to-end store path through the litellm proxy | litellm-test proxy up, virtual key, MemMachine up |
 | `test_e2e_recall.py` | end-to-end 2-turn recall through the litellm proxy | same as above |
-| `tools/platform_e2e.py` | end-to-end: Corp SSO → Open WebUI → LiteLLM → mock platform → core (44 checks: identity, self-enrolment, the Platform API itself, grants, key linking and reconcile) | the full stack up, Keycloak included, plus the service credential and LiteLLM's master key; see the script's docstring |
+| `tools/platform_e2e.py` | end-to-end: Corp SSO → Open WebUI → LiteLLM → mock platform → core (48 checks: identity, self-enrolment, the Platform API itself, grants, sharing, key linking and reconcile) | the full stack up, Keycloak included, plus the service credential and LiteLLM's master key; see the script's docstring |
 | `tools/cleanup_memories.py` | utility: delete all episodic memories in a project | MemMachine up |
 
 ---

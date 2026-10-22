@@ -85,7 +85,7 @@ assumes.
 | User disabled | 403 not-enrolled |
 | Body `org_id` not the person's | 403 |
 | `X-MemMachine-Project` missing, or not the body's `project_id` | 400 |
-| Project not in the person's grants (and grants are not `*`) | 403 `project-not-granted` |
+| Project neither granted in the person's org nor the alias of a project shared with them | 403 `project-not-granted` |
 | Any path or method other than the three below | 403 `endpoint-not-allowed` |
 
 The platform serves exactly three core paths and forwards their bodies as
@@ -118,8 +118,22 @@ single grant `*` means any project. The hook proposes a project per request
 adapter sends one per repository, the chat adapter `default`) and the platform
 allows it only if granted, then passes `<org>/<project>` to core, creating the
 project there before the first store. Emails are matched without regard to
-case. No shared namespaces. Memory stored under an org stays there if the
-person's employee ID changes: core cannot move it.
+case. Memory stored under an org stays there if the person's employee ID
+changes: core cannot move it.
+
+**Sharing.** A person shares a project of their own org with teammates, by
+email or employee ID, from the portal; `default` is never shared. The member
+sees it under its name (or `<project>-by-<owner>` if they already have that
+name, and they can rename it) and uses it like any project: the hook sends
+that name as `X-MemMachine-Project`, the platform resolves it to
+`<owner org>/<project>` and core never knows the difference. Members read and
+write; every message is stamped with its writer, so a member can delete only
+what they wrote and the owner anything. The owner unshares, the member can
+leave, and the owner removing the project ends every share; the next call is
+`project-not-granted`. Someone Corp SSO knows but who has no account yet is
+enrolled when shared with. No acceptance step, no email: the member's Access
+tab shows the project as new on their next sign-in. The audit log records
+`share`, `unshare` and `leave` under the member's email.
 
 ```bash
 A="python -m mock_platform.admin --db registry.sqlite"
@@ -295,5 +309,6 @@ SameSite=Strict cookie, and writes also need an `X-MM-Portal` header.
   create or sync time; a change in Keycloak needs a sync.
 - **Disabling is judged when each call arrives.** A store that lands after a
   person is re-enabled is stored.
-- No shared namespaces: one org per person, however many projects.
+- One org per person, however many projects; sharing is one role (read and
+  write), no read-only and no project admins yet.
 - **The portal has no rate limiting**, and pending sign-ins live in memory.

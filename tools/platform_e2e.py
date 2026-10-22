@@ -332,6 +332,35 @@ if os.environ.get("PLATFORM_DB"):
     check("X-MemMachine-Project disagreeing with the body's project_id: 400", s == 400, f"{s} {d} {body}")
     s, d, body = platform("/api/v2/memories/search", SEARCH, **ALICE)
     check("no X-MemMachine-Project at all: 400", s == 400, f"{s} {d} {body}")
+    # ---- sharing: alice shares a project of her org with bob; he uses it by name ----
+    TEAM = f"team-{RUN}"
+    reg.grant("alice@corp.example", TEAM)
+    alice_portal = portal_as("alice@corp.example")
+    try:
+        r = alice_portal("/portal/api/projects/share", {"project": TEAM, "people": f"bob@corp.example, ghost-{RUN}@corp.example"})
+        by = {x["who"]: x["status"] for x in r["results"]}
+        check("alice shares her project with bob by email; a stranger to Corp SSO is reported not found",
+              by.get("bob@corp.example") == "shared" and by.get(f"ghost-{RUN}@corp.example", "").startswith("not found"),
+              str(by))
+        s, a = chat(LL, keys["BOB_VIRTUAL_KEY"], f"Remember this: the team word for {RUN} is HERON-{RUN}. Reply with one word.",
+                    {"x-memmachine-project": TEAM})
+        check(f"bob's key on the shared project {TEAM}: served", s == 200, a)
+        time.sleep(8)
+        s, d, body = platform("/api/v2/memories/list", {"org_id": "E12345", "project_id": TEAM, "page_size": 50, "page_num": 0},
+                              project=TEAM, **ALICE)
+        eps = (json.loads(body).get("content") or {}).get("episodic_memory") or [] if s == 200 else []
+        check("what bob stored is in alice's namespace, stamped as bob's",
+              s == 200 and any(f"HERON-{RUN}" in (e.get("content") or "") and e.get("producer_id") == "E67890" for e in eps),
+              f"{s} {[(e.get('producer_id'), (e.get('content') or '')[:30]) for e in eps][:4]}")
+        alice_portal("/portal/api/projects/unshare", {"project": TEAM, "email": "bob@corp.example"})
+        s, d, body = platform("/api/v2/memories/search", {"org_id": "E67890", "project_id": TEAM, "query": "x"},
+                              project=TEAM, key=keys["BOB_VIRTUAL_KEY"], owner="E67890")
+        check("after alice unshares, bob's next call is project-not-granted",
+              s == 403 and d == "project-not-granted", f"{s} {d} {body}")
+    finally:
+        alice_portal("/portal/api/memories/clear", {"project": TEAM})
+        reg.ungrant("alice@corp.example", TEAM)
+
     newcomer = reg.add_user(f"e2e-{RUN}@corp.example", employee_id=f"E9{RUN[:5].upper()}")
     try:
         check("a newly created person has only `default`", newcomer.grants == ("default",), str(newcomer.grants))

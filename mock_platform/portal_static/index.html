@@ -280,7 +280,7 @@ dialog::backdrop{background:rgba(10,10,20,.45)}
     <section id="t-access">
       <div class="card sec">
         <div class="sec-h"><h3>Your namespaces</h3></div>
-        <p class="sub">Where your memories live. Only you can reach a personal namespace.</p>
+        <p class="sub">Where your memories live. A personal namespace is yours alone until you share a project; a shared one belongs to whoever shared it with you.</p>
         <div class="scroll"><table class="grid">
           <thead><tr><th>Namespace</th><th>Type</th><th>Memory</th><th>Stored</th><th style="text-align:right">Data</th></tr></thead>
           <tbody id="ns-rows"></tbody>
@@ -399,6 +399,16 @@ dialog::backdrop{background:rgba(10,10,20,.45)}
   </form>
 </dialog>
 
+<dialog id="dlg-share">
+  <form class="dlg" method="dialog" id="share-form">
+    <h3 id="share-title">Share</h3>
+    <p>Teammates you share with read and write this project under its name; each can delete only what they wrote. Name them by email or employee ID, several at once. Someone Corp SSO knows but who has no memory account yet is enrolled for it.</p>
+    <textarea class="t" id="share-people" rows="2" placeholder="bob@corp.example, E24680"></textarea>
+    <div id="share-results" style="font-size:13px;margin:6px 0"></div>
+    <div id="share-members" style="font-size:13.5px;margin:8px 0"></div>
+    <div class="row"><button class="btn" value="cancel" formnovalidate>Close</button><button class="btn primary" value="go">Share</button></div>
+  </form>
+</dialog>
 <dialog id="dlg-clear">
   <form class="dlg" method="dialog" id="clear-form">
     <h3>Delete everything in this namespace?</h3>
@@ -493,7 +503,7 @@ function result(d) {
 }
 const refusedOp = d => d.decision !== "allow" && d.decision !== "not-enrolled" && !(d.op || "").startsWith("admin:");
 function action(op) {
-  return { search: "recall", store: "save", list: "list", link: "link key", reconcile: "reconcile" }[op] || (op || "").replace("admin:", "admin · ");
+  return { search: "recall", store: "save", list: "list", link: "link key", reconcile: "reconcile", share: "share", unshare: "unshare", leave: "leave project", enrol: "enrol" }[op] || (op || "").replace("admin:", "admin · ");
 }
 function wayIn(d) {
   if (d.via === "app-token") return "Open WebUI";
@@ -510,7 +520,7 @@ function show(view) {
   $("#who").classList.toggle("hidden", view === "login" || view === "loading");
 }
 
-const UI_VERSION = "2026-10-22.2";
+const UI_VERSION = "2026-10-22.3";
 async function showLogin() {
   let cfg = { sso: false, password: true };
   try { cfg = await (await fetch("/portal/api/config")).json(); } catch {}
@@ -554,22 +564,31 @@ async function boot() {
 function renderAccess() {
   const m = S.me, rows = $("#ns-rows"); rows.replaceChildren();
   for (const ns of m.namespaces) {
+    const isDefault = !ns.shared && ns.project_id === m.namespaces[0].project_id;
+    const who = ns.shared
+      ? h("div", { class: "muted", style: "font-size:12.5px" }, `shared by ${ns.owner.person_id} (${ns.owner.email})`)
+      : h("div", { class: "muted", style: "font-size:12.5px" }, ns.members ? `shared with ${ns.members} ${ns.members === 1 ? "person" : "people"}` : "only you");
     rows.append(h("tr", {},
-      h("td", {}, h("code", {}, `${ns.org_id} / ${ns.project_id}`)),
-      h("td", {}, ns.kind, h("div", { class: "muted", style: "font-size:12.5px" }, "only you")),
+      h("td", {}, h("code", {}, ns.shared ? ns.name : `${ns.org_id} / ${ns.project_id}`),
+        ns.shared ? h("div", { class: "muted", style: "font-size:12px" }, `= ${ns.org_id} / ${ns.project_id}`) : null,
+        ns.new ? h("button", { class: "pill ok", style: "margin-left:8px;border:0;cursor:pointer", title: "New since you last looked; click to dismiss", onclick: () => markSeen(ns.name) }, "new") : null),
+      h("td", {}, ns.kind, who),
       h("td", {}, h("div", { style: "display:flex;gap:10px;align-items:center" },
         swBtn(ns.enabled, () => toggleMemory(!ns.enabled), "Memory on or off"),
         h("span", { class: ns.enabled ? "pill ok" : "pill off" }, ns.enabled ? "on" : "paused"))),
       h("td", {}, `${ns.episodes} messages`),
       h("td", {}, h("div", { class: "row-acts" },
-        h("a", { class: "btn sm", href: `/portal/api/export?project=${encodeURIComponent(ns.project_id)}`, download: true }, "Export"),
-        h("button", { class: "btn sm danger", onclick: () => openClear(ns.episodes, ns.project_id) }, "Delete all"),
-        ns.project_id === m.namespaces[0].project_id ? null : h("button", { class: "btn sm", title: "Take this project off your grants; its memories stay in core", onclick: () => removeProject(ns.project_id) }, "Remove")))));
+        h("a", { class: "btn sm", href: `/portal/api/export?project=${encodeURIComponent(ns.name)}`, download: true }, "Export"),
+        ns.shared ? null : h("button", { class: "btn sm danger", onclick: () => openClear(ns.episodes, ns.project_id) }, "Delete all"),
+        ns.shared ? h("button", { class: "btn sm", title: "Rename the name you use for it", onclick: () => renameShare(ns.name) }, "Rename") : null,
+        ns.shared ? h("button", { class: "btn sm danger", title: "Give it up; its memories stay with the owner", onclick: () => leaveProject(ns.name) }, "Leave") : null,
+        isDefault || ns.shared ? null : h("button", { class: "btn sm", title: "Share this project with teammates", onclick: () => openShare(ns.project_id) }, "Share…"),
+        isDefault || ns.shared ? null : h("button", { class: "btn sm", title: "Take this project off your grants; its memories stay in core, and nobody you shared it with keeps it", onclick: () => removeProject(ns.project_id) }, "Remove")))));
   }
   const g = m.grants || [];
   $("#grants-note").replaceChildren(
     "Projects you may use in your org: ", ...(g.includes("*") ? [h("code", {}, "any")] : g.flatMap((p, i) => [i ? ", " : "", h("code", {}, p)])),
-    ". A client names the project (Claude Code per repository, Open WebUI through its connection headers); the platform checks the grant. The Memories tab shows every project, with a filter; recall looks in one at a time. Removing a project keeps its memories in core.");
+    ". A client names the project (Claude Code per repository, Open WebUI through its connection headers); the platform checks the grant. A project shared with you is used by the name shown in its row. The Memories tab shows every project, with a filter; recall looks in one at a time. Removing a project keeps its memories in core.");
   const ways = $("#ways"); ways.replaceChildren();
   if (!m.access.length) ways.append(h("p", { class: "muted" }, "Nothing can reach your memory yet."));
   for (const a of m.access) {
@@ -584,6 +603,46 @@ function renderAccess() {
       swBtn(a.enabled, () => toggleWay(a), `Allow ${a.label}`)));
   }
 }
+async function markSeen(name) { try { await api("/portal/api/projects/seen", { body: { project: name } }); await refreshMe(); } catch (e) { toast(e.message); } }
+async function leaveProject(name) {
+  if (!confirm(`Leave ${name}? Its memories stay with the owner; you can be shared it again.`)) return;
+  try { await api("/portal/api/projects/leave", { body: { project: name } }); toast(`Left ${name}`); await refreshMe(); loadTurns(); } catch (e) { toast(e.message); }
+}
+async function renameShare(name) {
+  const to = prompt(`Your name for this shared project (letters, digits, _ - :). Clients send it as x-memmachine-project.`, name);
+  if (!to || to.trim() === name) return;
+  try { const r = await api("/portal/api/projects/rename", { body: { project: name, to: to.trim() } }); toast(`Now called ${r.alias}`); await refreshMe(); loadTurns(); } catch (e) { toast(e.message); }
+}
+async function openShare(project) {
+  S.shareProject = project;
+  $("#share-title").textContent = `Share ${S.me.namespaces[0].org_id} / ${project}`;
+  $("#share-people").value = ""; $("#share-results").replaceChildren();
+  $("#dlg-share").showModal();
+  await loadMembers();
+}
+async function loadMembers() {
+  const box = $("#share-members"); box.replaceChildren(h("span", { class: "muted" }, "loading…"));
+  try {
+    const { members } = await api(`/portal/api/projects/members?project=${encodeURIComponent(S.shareProject)}`);
+    box.replaceChildren(members.length ? h("div", { class: "muted", style: "font-size:12.5px;margin-bottom:4px" }, "Shared with") : h("span", { class: "muted" }, "Not shared with anyone yet."));
+    for (const mm of members) box.append(h("div", { style: "display:flex;gap:8px;align-items:center;justify-content:space-between;padding:4px 0" },
+      h("span", {}, mm.email, h("span", { class: "muted" }, mm.employee_id ? ` · ${mm.employee_id}` : "", mm.alias !== S.shareProject ? ` · they call it ${mm.alias}` : "", mm.seen ? "" : " · not seen yet")),
+      h("button", { class: "btn sm danger", onclick: () => unshare(mm.email) }, "Unshare")));
+  } catch (e) { box.replaceChildren(h("span", {}, e.message)); }
+}
+async function unshare(email) {
+  try { await api("/portal/api/projects/unshare", { body: { project: S.shareProject, email } }); toast(`Unshared from ${email}`); await loadMembers(); refreshMe(); } catch (e) { toast(e.message); }
+}
+$("#share-form").addEventListener("submit", async e => {
+  if (e.submitter && e.submitter.value !== "go") return;
+  e.preventDefault();
+  const people = $("#share-people").value.trim(); if (!people) return;
+  try {
+    const r = await api("/portal/api/projects/share", { body: { project: S.shareProject, people } });
+    $("#share-results").replaceChildren(...r.results.map(x => h("div", { class: x.alias ? "" : "muted" }, `${x.who}: ${x.status}${x.alias && x.alias !== S.shareProject ? ` (they see it as ${x.alias})` : ""}`)));
+    $("#share-people").value = ""; await loadMembers(); refreshMe();
+  } catch (err) { toast(err.message); }
+});
 async function removeProject(project) {
   try { await api("/portal/api/projects/remove", { body: { project } }); toast(`Removed ${project} from your projects`); await refreshMe(); }
   catch (e) { toast(e.message); }
@@ -643,7 +702,9 @@ async function loadUsers() {
             h("span", { class: "muted", style: "font-size:12.5px" }, "projects:"),
             ...(u.grants || []).map(p => h("span", { class: "pill neutral", title: p === "*" ? "any project" : `${u.org_id}/${p}` }, p === "*" ? "any" : p,
               p === "default" ? null : h("button", { class: "icon-btn", title: `Remove ${p}`, style: "padding:0 2px;line-height:1", onclick: () => adminGrant(u.email, p, true) }, "×"))),
-            h("button", { class: "btn sm", title: "Grant this person another project in their org (* = any)", onclick: () => { const p = prompt(`New project for ${u.email} (letters, digits, _ - :, or * for any):`); if (p) adminGrant(u.email, p.trim(), false); } }, "+ project"))),
+            h("button", { class: "btn sm", title: "Grant this person another project in their org (* = any)", onclick: () => { const p = prompt(`New project for ${u.email} (letters, digits, _ - :, or * for any):`); if (p) adminGrant(u.email, p.trim(), false); } }, "+ project")),
+          (Object.keys(u.shared_out || {}).length || (u.shared_in || []).length) ? h("div", { class: "muted", style: "font-size:12.5px;margin-top:2px" },
+            ...Object.entries(u.shared_out || {}).map(([p, n]) => `shares ${p} with ${n} · `), ...(u.shared_in || []).map(x => `uses ${x} · `)) : null),
         h("td", {}, h("span", { class: "role" + (u.role === "admin" ? " admin" : "") }, u.role)),
         h("td", {}, swBtn(u.enabled, () => adminUpdate(u.email, { enabled: !u.enabled }), `Memory for ${u.email}`)),
         h("td", {}, h("div", { style: "display:flex;gap:6px;flex-wrap:wrap" }, ways)),
@@ -751,7 +812,7 @@ $("#audit-refresh").addEventListener("click", loadAudit);
 /* ---------- memories ---------- */
 async function loadTurns() {
   $("#list").replaceChildren(h("div", { class: "loading" }, h("span", { class: "spin" })));
-  try { const r = await api("/portal/api/memories?project=all"); S.turns = r.turns; S.projects = r.projects; }
+  try { const r = await api("/portal/api/memories?project=all"); S.turns = r.turns; S.projects = r.projects; S.sharedInfo = r.shared || {}; }
   catch (e) { $("#list").replaceChildren(h("div", { class: "empty" }, e.message)); return; }
   if (!S.projects.includes(S.project)) S.project = "all";
   S.sel.clear(); renderChips(); renderList();
@@ -772,9 +833,10 @@ function renderChips() {
   pc.classList.toggle("hidden", projects.length < 2);
   if (projects.length > 1) {
     pc.append(h("span", { class: "muted", style: "font-size:12.5px;align-self:center;margin-right:4px" }, "Project:"));
-    for (const [id, label] of [["all", "All projects"], ...projects.map(p => [p, p])]) {
+    for (const [id, label] of [["all", "All projects"], ...projects.map(p => [p, S.sharedInfo && S.sharedInfo[p] ? `${p} · shared` : p])]) {
       const n = S.turns.filter(t => !t.automatic && (id === "all" || t.project === id)).length;
-      pc.append(h("button", { class: "chip" + (S.project === id ? " on" : ""), title: id === "all" ? "" : `${S.me.namespaces[0].org_id}/${id}`, onclick: () => { S.project = id; renderChips(); renderList(); } }, label, h("span", { class: "n" }, n)));
+      const info = S.sharedInfo && S.sharedInfo[id];
+      pc.append(h("button", { class: "chip" + (S.project === id ? " on" : ""), title: id === "all" ? "" : info ? `${info.namespace}, shared by ${info.owner}` : `${S.me.namespaces[0].org_id}/${id}`, onclick: () => { S.project = id; renderChips(); renderList(); } }, label, h("span", { class: "n" }, n)));
     }
   }
   const c = $("#chips"); c.replaceChildren();
@@ -806,7 +868,8 @@ function turnCard(t) {
   if (t.you) lines.push(h("div", { class: "line" }, h("div", { class: "who-ic you" }, "YOU"), clampText(t.you, "you", 3)));
   if (t.reply) lines.push(h("div", { class: "line" }, h("div", { class: "who-ic ai" }, "AI"), clampText(t.reply, "ai", 2)));
   const badges = [h("span", {}, when(t.at)), h("span", { class: "badge" + (t.source === "Added by you" ? " mine" : "") }, t.source)];
-  if (t.project && (S.projects || []).length > 1) badges.push(h("span", { class: "badge", title: "project" }, t.project));
+  if (t.project && (S.projects || []).length > 1) badges.push(h("span", { class: "badge", title: t.shared ? "a project shared with you" : "project" }, t.shared ? `${t.project} · shared` : t.project));
+  if (t.shared && !t.mine) badges.push(h("span", { class: "badge", title: "written by someone else; only they or the owner can delete it" }, "theirs"));
   if (t.automatic) badges.push(h("span", { class: "badge auto" }, `Automatic · ${t.automatic}`));
   const acts = h("div", { class: "acts" });
   const del = h("button", { class: "icon-btn", title: "Delete", onclick: () => {

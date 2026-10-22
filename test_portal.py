@@ -238,6 +238,78 @@ class TestGrantEditing:
         assert world.reg.user_by_email("bob@corp.example").grants == ("default",)
 
 
+class TestSharing:
+    def setup_share(self, world):
+        world.reg.grant("alice@corp.example", "research")
+        world.store["alice_corp_example/research"] = [
+            ep(9, "user", "alice's research note", "r", at="2026-10-15T10:00:00.000000Z"),
+        ]
+        world.store["alice_corp_example/research"][0]["producer_id"] = "alice_corp_example"
+        login(world)
+        return world.client.post("/portal/api/projects/share", headers=W,
+                                 json={"project": "research", "people": "bob@corp.example, nobody@corp.example"})
+
+    def test_owner_shares_by_email_and_sees_members(self, world):
+        r = self.setup_share(world)
+        assert r.status_code == 200
+        by = {x["who"]: x["status"] for x in r.json()["results"]}
+        assert by["bob@corp.example"] == "shared" and by["nobody@corp.example"].startswith("not found")
+        assert [m["email"] for m in r.json()["members"]] == ["bob@corp.example"]
+        row = next(a for a in world.reg.audit(5) if a["op"] == "share")
+        assert row["email"] == "bob@corp.example" and row["namespace"] == "alice_corp_example/research"
+
+    def test_member_sees_it_as_new_and_reads_it(self, world):
+        self.setup_share(world)
+        login(world, "bob@corp.example")
+        me = world.client.get("/portal/api/me").json()
+        shared = [n for n in me["namespaces"] if n["shared"]]
+        assert shared and shared[0]["name"] == "research" and shared[0]["new"] is True
+        assert shared[0]["org_id"] == "alice_corp_example" and shared[0]["owner"]["email"] == "alice@corp.example"
+        turns = world.client.get("/portal/api/memories?project=research").json()["turns"]
+        assert [t["you"] for t in turns] == ["alice's research note"] and turns[0]["shared"] and not turns[0]["mine"]
+        assert not [n for n in world.client.get("/portal/api/me").json()["namespaces"] if n["shared"]][0]["new"]
+
+    def test_member_deletes_only_their_own_messages(self, world):
+        self.setup_share(world)
+        bobs = ep(10, "user", "bob's line", "r", at="2026-10-16T10:00:00.000000Z")
+        bobs["producer_id"] = "bob_corp_example"
+        world.store["alice_corp_example/research"].append(bobs)
+        login(world, "bob@corp.example")
+        r = world.client.post("/portal/api/memories/delete", headers=W, json={"ids": ["9", "10"], "project": "research"})
+        assert r.json()["deleted"] == 1
+        assert [e["uid"] for e in world.store["alice_corp_example/research"]] == ["9"]
+        assert world.client.post("/portal/api/memories/clear", headers=W, json={"project": "research"}).json()["deleted"] == 0
+
+    def test_member_cannot_share_or_delete_all_and_can_leave(self, world):
+        self.setup_share(world)
+        login(world, "bob@corp.example")
+        assert world.client.post("/portal/api/projects/share", headers=W,
+                                 json={"project": "research", "people": "root@corp.example"}).status_code == 403
+        r = world.client.post("/portal/api/projects/leave", headers=W, json={"project": "research"})
+        assert r.status_code == 200
+        assert world.client.get("/portal/api/memories?project=research").status_code == 403
+
+    def test_owner_unshares(self, world):
+        self.setup_share(world)
+        r = world.client.post("/portal/api/projects/unshare", headers=W,
+                              json={"project": "research", "email": "bob@corp.example"})
+        assert r.status_code == 200 and r.json()["members"] == []
+        assert world.reg.user_by_email("bob@corp.example").shares == ()
+
+    def test_default_cannot_be_shared(self, world):
+        login(world)
+        r = world.client.post("/portal/api/projects/share", headers=W,
+                              json={"project": "default", "people": "bob@corp.example"})
+        assert r.status_code == 400
+
+    def test_member_renames_the_alias(self, world):
+        self.setup_share(world)
+        login(world, "bob@corp.example")
+        r = world.client.post("/portal/api/projects/rename", headers=W, json={"project": "research", "to": "alices-research"})
+        assert r.json()["alias"] == "alices-research"
+        assert world.client.get("/portal/api/memories?project=alices-research").status_code == 200
+
+
 class TestOwnMemoryOnly:
     def test_lists_only_own_namespace(self, world):
         login(world)
