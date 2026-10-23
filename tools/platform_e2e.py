@@ -177,6 +177,15 @@ def clear_earlier_runs(email):
 OW = f"{OWUI}/api/chat/completions"
 LL = f"{LITELLM}/v1/chat/completions"
 clear_earlier_runs("alice@corp.example")
+if os.environ.get("PLATFORM_DB"):
+    # Carol must start unenrolled: a manual share or an interrupted run may have left her account.
+    sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+    from mock_platform.registry import Registry as _Registry
+
+    if _Registry(os.environ["PLATFORM_DB"]).user_by_email("carol@corp.example") is not None:
+        gone = portal_as("admin@corp.example")("/portal/api/admin/users/delete",
+                                               {"email": "carol@corp.example", "delete_memories": True})
+        print(f"(carol had an account already; removed it, memories deleted: {gone.get('memories_deleted')})")
 alice, bob, carol = (owui_login(f"{n}@corp.example") for n in ("alice", "bob", "carol"))
 me = owui_me(alice)
 check("alice signed in to Open WebUI through Corp SSO; name is her employee ID",
