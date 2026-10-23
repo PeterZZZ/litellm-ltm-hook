@@ -383,6 +383,59 @@ class TestNamespace:
         r = search(world, key=ALICE_KEY, org="")
         assert r.status_code == 403
 
+    def test_a_shared_project_resolves_into_the_owners_org(self, world):
+        # Bob shares his project with Alice; her request names it, the body
+        # still names her own org, and core receives Bob's namespace.
+        world.reg.grant("bob@corp.example", "jpmc-criu")
+        sh = world.reg.share("bob@corp.example", "jpmc-criu", "alice@corp.example")
+        assert sh.alias == "jpmc-criu"
+        r = search(world, key=ALICE_KEY, org="E12345", project="jpmc-criu")
+        assert r.status_code == 200
+        sent = world.core[-1]["json"]
+        assert (sent["org_id"], sent["project_id"]) == ("E67890", "jpmc-criu")
+        assert world.reg.audit(1)[0]["namespace"] == "E67890/jpmc-criu"
+
+    def test_stores_into_a_shared_project_carry_the_writers_provenance(self, world):
+        world.reg.grant("bob@corp.example", "jpmc-criu")
+        world.reg.share("bob@corp.example", "jpmc-criu", "alice@corp.example")
+        r = store(world, key=ALICE_KEY, org="E12345", project="jpmc-criu")
+        assert r.status_code == 200
+        sent = world.core[-1]["json"]
+        assert (sent["org_id"], sent["project_id"]) == ("E67890", "jpmc-criu")
+        assert sent["messages"][0]["producer"] == "E12345"
+        assert sent["messages"][0]["metadata"]["user_id"] == "E12345"
+
+    def test_unshare_takes_effect_on_the_next_call(self, world):
+        world.reg.grant("bob@corp.example", "jpmc-criu")
+        world.reg.share("bob@corp.example", "jpmc-criu", "alice@corp.example")
+        world.reg.unshare("bob@corp.example", "jpmc-criu", "alice@corp.example")
+        r = search(world, key=ALICE_KEY, org="E12345", project="jpmc-criu")
+        assert r.status_code == 403 and decision(r) == "project-not-granted"
+
+    def test_alias_when_the_member_has_the_same_name(self, world):
+        world.reg.grant("bob@corp.example", "research")
+        world.reg.grant("alice@corp.example", "research")
+        sh = world.reg.share("bob@corp.example", "research", "alice@corp.example")
+        assert sh.alias == "research-by-E67890"
+        r = search(world, key=ALICE_KEY, org="E12345", project="research")
+        assert world.core[-1]["json"]["org_id"] == "E12345"
+        r = search(world, key=ALICE_KEY, org="E12345", project="research-by-E67890")
+        assert r.status_code == 200 and world.core[-1]["json"]["org_id"] == "E67890"
+
+    def test_default_is_never_shared_and_only_held_projects_are(self, world):
+        with pytest.raises(ValueError):
+            world.reg.share("bob@corp.example", "default", "alice@corp.example")
+        with pytest.raises(ValueError):
+            world.reg.share("bob@corp.example", "nothing", "alice@corp.example")
+        with pytest.raises(ValueError):
+            world.reg.grant("bob@corp.example", "x") and world.reg.share("bob@corp.example", "x", "bob@corp.example")
+
+    def test_ungrant_by_the_owner_ends_the_share(self, world):
+        world.reg.grant("bob@corp.example", "jpmc-criu")
+        world.reg.share("bob@corp.example", "jpmc-criu", "alice@corp.example")
+        world.reg.ungrant("bob@corp.example", "jpmc-criu")
+        assert world.reg.user_by_email("alice@corp.example").shares == ()
+
 
 class TestNotEnrolled:
     def test_unknown_key(self, world):

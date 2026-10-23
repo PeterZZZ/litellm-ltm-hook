@@ -79,13 +79,13 @@ assumes.
 | Personal key switched off by its owner, or Open WebUI access switched off | 403 not-enrolled |
 | App key without a token | 401 |
 | App key, token fails signature / issuer / expiry / has no email | 401 |
-| App key, token's email not registered | 403 not-enrolled |
+| App key, token's email not registered and not in Corp SSO either | 403 not-enrolled (someone SSO knows is enrolled on the spot and served) |
 | App key without `X-MemMachine-User` | 401 |
 | `X-MemMachine-User` not in the token, or not the token's person | 403 |
 | User disabled | 403 not-enrolled |
 | Body `org_id` not the person's | 403 |
 | `X-MemMachine-Project` missing, or not the body's `project_id` | 400 |
-| Project not in the person's grants (and grants are not `*`) | 403 `project-not-granted` |
+| Project neither granted in the person's org nor the alias of a project shared with them | 403 `project-not-granted` |
 | Any path or method other than the three below | 403 `endpoint-not-allowed` |
 
 The platform serves exactly three core paths and forwards their bodies as
@@ -118,8 +118,22 @@ single grant `*` means any project. The hook proposes a project per request
 adapter sends one per repository, the chat adapter `default`) and the platform
 allows it only if granted, then passes `<org>/<project>` to core, creating the
 project there before the first store. Emails are matched without regard to
-case. No shared namespaces. Memory stored under an org stays there if the
-person's employee ID changes: core cannot move it.
+case. Memory stored under an org stays there if the person's employee ID
+changes: core cannot move it.
+
+**Sharing.** A person shares a project of their own org with teammates, by
+email or employee ID, from the portal; `default` is never shared. The member
+sees it under its name (or `<project>-by-<owner>` if they already have that
+name, and they can rename it) and uses it like any project: the hook sends
+that name as `X-MemMachine-Project`, the platform resolves it to
+`<owner org>/<project>` and core never knows the difference. Members read and
+write; every message is stamped with its writer, so a member can delete only
+what they wrote and the owner anything. The owner unshares, the member can
+leave, and the owner removing the project ends every share; the next call is
+`project-not-granted`. Someone Corp SSO knows but who has no account yet is
+enrolled when shared with. No acceptance step, no email: the member's Access
+tab shows the project as new on their next sign-in. The audit log records
+`share`, `unshare` and `leave` under the member's email.
 
 ```bash
 A="python -m mock_platform.admin --db registry.sqlite"
@@ -236,8 +250,8 @@ Keycloak session. What someone may do here comes from the **platform's** role
 - their namespaces: one row per granted project (`<org>/<project>`), each with
   its stored count, export and delete-all; memory on/off is per person. They
   can add a project to their own org and remove one again (its memories stay;
-  the default project stays granted). The Memories and recall tabs show the
-  default project;
+  the default project stays granted). The Memories tab shows every project
+  with a project filter; adding a memory and the recall preview pick one;
 - every way into their memory, with a switch each: Open WebUI (the app key plus
   their signed token) and each personal LiteLLM key. A switched-off way gets
   "not enrolled": that client keeps working without memory;
@@ -263,8 +277,19 @@ The Memories and "What would it recall?" tabs are unchanged.
 - the audit log: every authorization decision and admin action, filterable.
 
 Bootstrap the first admin with the CLI: `user add admin@corp.example --role admin
---employee-id E10000`. There is no self-enrolment: a person without an account is
-told who the admins are.
+--employee-id E10000`.
+
+**Enrolment on first use** (`MOCK_PLATFORM_AUTO_ENROL=1`, the default when Corp
+SSO is configured): a person the registry does not know, arriving with a valid
+Open WebUI token, a personal key whose LiteLLM owner names them, or a portal
+sign-in, is looked up in the Corp SSO directory. Someone the directory knows
+and has not disabled is created on the spot with the employee ID the directory
+holds and a `default` project, and that same request is served. Signing in
+through Corp SSO is what proves membership, so no admin step is needed; the
+audit log says `enrol` and the Admin tab marks the account self-enrolled. A
+failed lookup is remembered for 60 s. With `MOCK_PLATFORM_AUTO_ENROL=0`, or
+without a directory, a person without an account gets no memory until an admin
+creates one, and the portal tells them who the admins are.
 
 Every route acts on the signed-in person's namespace, taken from the registry,
 never from the browser; deletes re-check each id against that namespace first.
@@ -283,5 +308,6 @@ SameSite=Strict cookie, and writes also need an `X-MM-Portal` header.
   create or sync time; a change in Keycloak needs a sync.
 - **Disabling is judged when each call arrives.** A store that lands after a
   person is re-enabled is stored.
-- No shared namespaces: one org per person, however many projects.
+- One org per person, however many projects; sharing is one role (read and
+  write), no read-only and no project admins yet.
 - **The portal has no rate limiting**, and pending sign-ins live in memory.

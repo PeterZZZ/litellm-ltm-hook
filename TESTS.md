@@ -9,11 +9,12 @@ Test files, in increasing scope:
 | `test_hook.py` | unit: the hook's core and both adapters (Claude Code, Open WebUI), identity, refusals, retries, dead letters, replay | `httpx`, `pytest`; no network |
 | `test_platform.py` | unit: the mock platform's authorize() rules and request rewriting | `uv run --group platform`; no network |
 | `test_linking.py` | unit: keys looked up in LiteLLM and linked on their first call; the miss cache; reconcile | `uv run --group platform`; no network |
+| `test_enrol.py` | unit: enrolment on first use from a signed token, a personal key or a portal sign-in; strangers to SSO stay out | `uv run --group platform`; no network |
 | `test_portal.py` | unit: the portal (password sign-in via Open WebUI, own-namespace-only, switch, enroll) | `uv run --group platform`; no network |
 | `test_sso.py` | unit: Corp SSO in the portal (Keycloak code flow, ID-token checks, employee IDs from the directory) | `uv run --group platform`; no network |
 | `test_e2e_store.py` | end-to-end store path through the litellm proxy | litellm-test proxy up, virtual key, MemMachine up |
 | `test_e2e_recall.py` | end-to-end 2-turn recall through the litellm proxy | same as above |
-| `tools/platform_e2e.py` | end-to-end: Corp SSO → Open WebUI → LiteLLM → mock platform → core (41 checks: identity, the Platform API itself, grants, key linking and reconcile) | the full stack up, Keycloak included, plus the service credential and LiteLLM's master key; see the script's docstring |
+| `tools/platform_e2e.py` | end-to-end: Corp SSO → Open WebUI → LiteLLM → mock platform → core (48 checks: identity, self-enrolment, the Platform API itself, grants, sharing, key linking and reconcile) | the full stack up, Keycloak included, plus the service credential and LiteLLM's master key; see the script's docstring |
 | `tools/cleanup_memories.py` | utility: delete all episodic memories in a project | MemMachine up |
 
 ---

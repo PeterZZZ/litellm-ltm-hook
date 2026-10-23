@@ -280,7 +280,7 @@ dialog::backdrop{background:rgba(10,10,20,.45)}
     <section id="t-access">
       <div class="card sec">
         <div class="sec-h"><h3>Your namespaces</h3></div>
-        <p class="sub">Where your memories live. Only you can reach a personal namespace.</p>
+        <p class="sub">Where your memories live. A personal namespace is yours alone until you share a project; a shared one belongs to whoever shared it with you.</p>
         <div class="scroll"><table class="grid">
           <thead><tr><th>Namespace</th><th>Type</th><th>Memory</th><th>Stored</th><th style="text-align:right">Data</th></tr></thead>
           <tbody id="ns-rows"></tbody>
@@ -317,6 +317,7 @@ dialog::backdrop{background:rgba(10,10,20,.45)}
         <button class="btn" id="select-btn">Select</button>
         <button class="btn primary" id="add-btn">+ Add a memory</button>
       </div>
+      <div class="chips" id="project-chips"></div>
       <div class="chips" id="chips"></div>
       <div class="banner hidden" id="auto-banner">
         <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="8" cy="8" r="6"/><path d="M8 5v3.5M8 11h.01" stroke-linecap="round"/></svg>
@@ -341,6 +342,7 @@ dialog::backdrop{background:rgba(10,10,20,.45)}
           <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="7" cy="7" r="4.5"/><path d="M10.5 10.5L14 14" stroke-linecap="round"/></svg>
           <input class="t" id="recall-q" placeholder="e.g. What bike do I ride?">
         </div>
+        <select class="t hidden" id="recall-project" title="Which project to look in" style="max-width:200px"></select>
         <button class="btn primary" type="submit">Look up</button>
       </form>
       <div id="recall-out"></div>
@@ -351,7 +353,7 @@ dialog::backdrop{background:rgba(10,10,20,.45)}
       <div class="card sec">
         <div class="sec-h"><h3>Accounts</h3><span class="muted" style="font-size:13px" id="acct-count"></span>
           <button class="btn sm" id="reconcile-btn" style="margin-left:auto" title="Re-read every key in LiteLLM now: drop keys that are gone, blocked or reassigned, link new keys of known people. Runs on its own every 10 minutes.">Reconcile keys with LiteLLM</button></div>
-        <p class="sub">Create an account by email. The platform looks up that person's keys in LiteLLM itself, with its own read-only key, so a key can never be attached to the wrong owner; a new personal key of a known person is linked the first time it is used.</p>
+        <p class="sub">Anyone Corp SSO knows enrols themselves on their first chat or portal sign-in, with a default project; they appear here as self-enrolled, and the audit log says when. Create an account by hand for anyone else. The platform looks up each person's keys in LiteLLM itself, with its own read-only key; a new personal key of a known person is linked the first time it is used.</p>
         <form class="create" id="create-form">
           <div><label class="f" for="new-email">Email</label><input class="t" id="new-email" type="email" placeholder="dana@corp.example" required></div>
           <div><label class="f" for="new-role">Role</label><select class="t" id="new-role"><option value="user">User</option><option value="admin">Admin</option></select></div>
@@ -392,10 +394,21 @@ dialog::backdrop{background:rgba(10,10,20,.45)}
     <h3>Add a memory</h3>
     <p>Write it the way you'd tell a colleague. The assistant will recall it in future chats.</p>
     <textarea class="t" id="add-text" rows="4" maxlength="4000" placeholder="I prefer metric units and short answers."></textarea>
+    <div id="add-project-row" class="hidden"><label class="f" for="add-project">Project</label><select class="t" id="add-project"></select></div>
     <div class="row"><button class="btn" value="cancel" formnovalidate>Cancel</button><button class="btn primary" id="add-save" value="save">Remember this</button></div>
   </form>
 </dialog>
 
+<dialog id="dlg-share">
+  <form class="dlg" method="dialog" id="share-form">
+    <h3 id="share-title">Share</h3>
+    <p>Teammates you share with read and write this project under its name; each can delete only what they wrote. Name them by email or employee ID, several at once. Someone Corp SSO knows but who has no memory account yet is enrolled for it.</p>
+    <textarea class="t" id="share-people" rows="2" placeholder="bob@corp.example, E24680"></textarea>
+    <div id="share-results" style="font-size:13px;margin:6px 0"></div>
+    <div id="share-members" style="font-size:13.5px;margin:8px 0"></div>
+    <div class="row"><button class="btn" value="cancel" formnovalidate>Close</button><button class="btn primary" value="go">Share</button></div>
+  </form>
+</dialog>
 <dialog id="dlg-clear">
   <form class="dlg" method="dialog" id="clear-form">
     <h3>Delete everything in this namespace?</h3>
@@ -490,7 +503,7 @@ function result(d) {
 }
 const refusedOp = d => d.decision !== "allow" && d.decision !== "not-enrolled" && !(d.op || "").startsWith("admin:");
 function action(op) {
-  return { search: "recall", store: "save", list: "list", link: "link key", reconcile: "reconcile" }[op] || (op || "").replace("admin:", "admin · ");
+  return { search: "recall", store: "save", list: "list", link: "link key", reconcile: "reconcile", share: "share", unshare: "unshare", leave: "leave project", enrol: "enrol" }[op] || (op || "").replace("admin:", "admin · ");
 }
 function wayIn(d) {
   if (d.via === "app-token") return "Open WebUI";
@@ -500,14 +513,14 @@ function wayIn(d) {
 }
 
 /* ---------- state ---------- */
-const S = { me: null, turns: [], chip: "all", q: "", selecting: false, sel: new Set(), audit: [], achip: "all", users: [], hist: [], histN: 20, auditN: 30 };
+const S = { me: null, turns: [], chip: "all", project: "all", q: "", selecting: false, sel: new Set(), audit: [], achip: "all", users: [], hist: [], histN: 20, auditN: 30 };
 
 function show(view) {
   for (const v of ["login", "none", "main", "loading"]) $(`#v-${v}`).classList.toggle("hidden", v !== view);
   $("#who").classList.toggle("hidden", view === "login" || view === "loading");
 }
 
-const UI_VERSION = "2026-10-21.1";
+const UI_VERSION = "2026-10-22.3";
 async function showLogin() {
   let cfg = { sso: false, password: true };
   try { cfg = await (await fetch("/portal/api/config")).json(); } catch {}
@@ -551,22 +564,31 @@ async function boot() {
 function renderAccess() {
   const m = S.me, rows = $("#ns-rows"); rows.replaceChildren();
   for (const ns of m.namespaces) {
+    const isDefault = !ns.shared && ns.project_id === m.namespaces[0].project_id;
+    const who = ns.shared
+      ? h("div", { class: "muted", style: "font-size:12.5px" }, `shared by ${ns.owner.person_id} (${ns.owner.email})`)
+      : h("div", { class: "muted", style: "font-size:12.5px" }, ns.members ? `shared with ${ns.members} ${ns.members === 1 ? "person" : "people"}` : "only you");
     rows.append(h("tr", {},
-      h("td", {}, h("code", {}, `${ns.org_id} / ${ns.project_id}`)),
-      h("td", {}, ns.kind, h("div", { class: "muted", style: "font-size:12.5px" }, "only you")),
+      h("td", {}, h("code", {}, ns.shared ? ns.name : `${ns.org_id} / ${ns.project_id}`),
+        ns.shared ? h("div", { class: "muted", style: "font-size:12px" }, `= ${ns.org_id} / ${ns.project_id}`) : null,
+        ns.new ? h("button", { class: "pill ok", style: "margin-left:8px;border:0;cursor:pointer", title: "New since you last looked; click to dismiss", onclick: () => markSeen(ns.name) }, "new") : null),
+      h("td", {}, ns.kind, who),
       h("td", {}, h("div", { style: "display:flex;gap:10px;align-items:center" },
         swBtn(ns.enabled, () => toggleMemory(!ns.enabled), "Memory on or off"),
         h("span", { class: ns.enabled ? "pill ok" : "pill off" }, ns.enabled ? "on" : "paused"))),
       h("td", {}, `${ns.episodes} messages`),
       h("td", {}, h("div", { class: "row-acts" },
-        h("a", { class: "btn sm", href: `/portal/api/export?project=${encodeURIComponent(ns.project_id)}`, download: true }, "Export"),
-        h("button", { class: "btn sm danger", onclick: () => openClear(ns.episodes, ns.project_id) }, "Delete all"),
-        ns.project_id === m.namespaces[0].project_id ? null : h("button", { class: "btn sm", title: "Take this project off your grants; its memories stay in core", onclick: () => removeProject(ns.project_id) }, "Remove")))));
+        h("a", { class: "btn sm", href: `/portal/api/export?project=${encodeURIComponent(ns.name)}`, download: true }, "Export"),
+        ns.shared ? null : h("button", { class: "btn sm danger", onclick: () => openClear(ns.episodes, ns.project_id) }, "Delete all"),
+        ns.shared ? h("button", { class: "btn sm", title: "Rename the name you use for it", onclick: () => renameShare(ns.name) }, "Rename") : null,
+        ns.shared ? h("button", { class: "btn sm danger", title: "Give it up; its memories stay with the owner", onclick: () => leaveProject(ns.name) }, "Leave") : null,
+        isDefault || ns.shared ? null : h("button", { class: "btn sm", title: "Share this project with teammates", onclick: () => openShare(ns.project_id) }, "Share…"),
+        isDefault || ns.shared ? null : h("button", { class: "btn sm", title: "Take this project off your grants; its memories stay in core, and nobody you shared it with keeps it", onclick: () => removeProject(ns.project_id) }, "Remove")))));
   }
   const g = m.grants || [];
   $("#grants-note").replaceChildren(
     "Projects you may use in your org: ", ...(g.includes("*") ? [h("code", {}, "any")] : g.flatMap((p, i) => [i ? ", " : "", h("code", {}, p)])),
-    ". A client names the project (Claude Code per repository, Open WebUI through its connection headers); the platform checks the grant. The Memories and recall tabs show your default project. Removing a project keeps its memories in core.");
+    ". A client names the project (Claude Code per repository, Open WebUI through its connection headers); the platform checks the grant. A project shared with you is used by the name shown in its row. The Memories tab shows every project, with a filter; recall looks in one at a time. Removing a project keeps its memories in core.");
   const ways = $("#ways"); ways.replaceChildren();
   if (!m.access.length) ways.append(h("p", { class: "muted" }, "Nothing can reach your memory yet."));
   for (const a of m.access) {
@@ -581,6 +603,46 @@ function renderAccess() {
       swBtn(a.enabled, () => toggleWay(a), `Allow ${a.label}`)));
   }
 }
+async function markSeen(name) { try { await api("/portal/api/projects/seen", { body: { project: name } }); await refreshMe(); } catch (e) { toast(e.message); } }
+async function leaveProject(name) {
+  if (!confirm(`Leave ${name}? Its memories stay with the owner; you can be shared it again.`)) return;
+  try { await api("/portal/api/projects/leave", { body: { project: name } }); toast(`Left ${name}`); await refreshMe(); loadTurns(); } catch (e) { toast(e.message); }
+}
+async function renameShare(name) {
+  const to = prompt(`Your name for this shared project (letters, digits, _ - :). Clients send it as x-memmachine-project.`, name);
+  if (!to || to.trim() === name) return;
+  try { const r = await api("/portal/api/projects/rename", { body: { project: name, to: to.trim() } }); toast(`Now called ${r.alias}`); await refreshMe(); loadTurns(); } catch (e) { toast(e.message); }
+}
+async function openShare(project) {
+  S.shareProject = project;
+  $("#share-title").textContent = `Share ${S.me.namespaces[0].org_id} / ${project}`;
+  $("#share-people").value = ""; $("#share-results").replaceChildren();
+  $("#dlg-share").showModal();
+  await loadMembers();
+}
+async function loadMembers() {
+  const box = $("#share-members"); box.replaceChildren(h("span", { class: "muted" }, "loading…"));
+  try {
+    const { members } = await api(`/portal/api/projects/members?project=${encodeURIComponent(S.shareProject)}`);
+    box.replaceChildren(members.length ? h("div", { class: "muted", style: "font-size:12.5px;margin-bottom:4px" }, "Shared with") : h("span", { class: "muted" }, "Not shared with anyone yet."));
+    for (const mm of members) box.append(h("div", { style: "display:flex;gap:8px;align-items:center;justify-content:space-between;padding:4px 0" },
+      h("span", {}, mm.email, h("span", { class: "muted" }, mm.employee_id ? ` · ${mm.employee_id}` : "", mm.alias !== S.shareProject ? ` · they call it ${mm.alias}` : "", mm.seen ? "" : " · not seen yet")),
+      h("button", { class: "btn sm danger", onclick: () => unshare(mm.email) }, "Unshare")));
+  } catch (e) { box.replaceChildren(h("span", {}, e.message)); }
+}
+async function unshare(email) {
+  try { await api("/portal/api/projects/unshare", { body: { project: S.shareProject, email } }); toast(`Unshared from ${email}`); await loadMembers(); refreshMe(); } catch (e) { toast(e.message); }
+}
+$("#share-form").addEventListener("submit", async e => {
+  if (e.submitter && e.submitter.value !== "go") return;
+  e.preventDefault();
+  const people = $("#share-people").value.trim(); if (!people) return;
+  try {
+    const r = await api("/portal/api/projects/share", { body: { project: S.shareProject, people } });
+    $("#share-results").replaceChildren(...r.results.map(x => h("div", { class: x.alias ? "" : "muted" }, `${x.who}: ${x.status}${x.alias && x.alias !== S.shareProject ? ` (they see it as ${x.alias})` : ""}`)));
+    $("#share-people").value = ""; await loadMembers(); refreshMe();
+  } catch (err) { toast(err.message); }
+});
 async function removeProject(project) {
   try { await api("/portal/api/projects/remove", { body: { project } }); toast(`Removed ${project} from your projects`); await refreshMe(); }
   catch (e) { toast(e.message); }
@@ -625,21 +687,24 @@ async function loadAdmin() {
 async function loadUsers() {
   const rows = $("#acct-rows");
   try {
-    const { users } = await api("/portal/api/admin/users");
+    const { users, self_enrolled, auto_enrol } = await api("/portal/api/admin/users");
     S.users = users; rows.replaceChildren();
-    $("#acct-count").textContent = `${users.length} ${users.length === 1 ? "account" : "accounts"}`;
+    $("#acct-count").textContent = `${users.length} ${users.length === 1 ? "account" : "accounts"}` + (self_enrolled ? ` · ${self_enrolled} self-enrolled` : "") + (auto_enrol ? "" : " · self-enrolment off");
     for (const u of users) {
       const self = u.email.toLowerCase() === S.me.email.toLowerCase();
       const ways = [h("span", { class: u.allow_app ? "pill neutral" : "pill off" }, "Open WebUI" + (u.allow_app ? "" : " · off"))];
       for (const k of u.keys) ways.push(h("span", { class: k.enabled ? "pill neutral" : "pill off", title: `hash ${k.hash}…` }, k.label + (k.enabled ? "" : " · off")));
       rows.append(h("tr", {},
         h("td", {}, h("b", {}, u.email), self ? h("span", { class: "muted" }, "  (you)") : null,
+          u.enrolled_by ? h("span", { class: "pill neutral", style: "margin-left:8px", title: `Enrolled themselves on first use via ${u.enrolled_by}, ${when(u.created_at)}; Corp SSO vouched for them` }, `self-enrolled · ${u.enrolled_by}`) : null,
           h("div", {}, h("span", { class: "muted" }, u.employee_id ? `${u.employee_id} · ` : "no employee ID · "), h("code", { class: "muted" }, u.org_id || u.namespace)),
           h("div", { style: "display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-top:4px" },
             h("span", { class: "muted", style: "font-size:12.5px" }, "projects:"),
             ...(u.grants || []).map(p => h("span", { class: "pill neutral", title: p === "*" ? "any project" : `${u.org_id}/${p}` }, p === "*" ? "any" : p,
               p === "default" ? null : h("button", { class: "icon-btn", title: `Remove ${p}`, style: "padding:0 2px;line-height:1", onclick: () => adminGrant(u.email, p, true) }, "×"))),
-            h("button", { class: "btn sm", title: "Grant this person another project in their org (* = any)", onclick: () => { const p = prompt(`New project for ${u.email} (letters, digits, _ - :, or * for any):`); if (p) adminGrant(u.email, p.trim(), false); } }, "+ project"))),
+            h("button", { class: "btn sm", title: "Grant this person another project in their org (* = any)", onclick: () => { const p = prompt(`New project for ${u.email} (letters, digits, _ - :, or * for any):`); if (p) adminGrant(u.email, p.trim(), false); } }, "+ project")),
+          (Object.keys(u.shared_out || {}).length || (u.shared_in || []).length) ? h("div", { class: "muted", style: "font-size:12.5px;margin-top:2px" },
+            ...Object.entries(u.shared_out || {}).map(([p, n]) => `shares ${p} with ${n} · `), ...(u.shared_in || []).map(x => `uses ${x} · `)) : null),
         h("td", {}, h("span", { class: "role" + (u.role === "admin" ? " admin" : "") }, u.role)),
         h("td", {}, swBtn(u.enabled, () => adminUpdate(u.email, { enabled: !u.enabled }), `Memory for ${u.email}`)),
         h("td", {}, h("div", { style: "display:flex;gap:6px;flex-wrap:wrap" }, ways)),
@@ -712,7 +777,7 @@ async function loadTrust() {
         ...(t.apps.length ? t.apps.map(a => h("div", {}, a.label, a.suspended ? h("span", { class: "pill bad", style: "margin-left:8px" }, "suspended") : null, h("small", {}, `issuer ${a.issuer} · key ${a.key_hash}… · LiteLLM owner ${a.owner || "none"} (checked on every call)` + (a.suspended ? ` · ${a.suspended}; serves again once LiteLLM names ${a.owner || "no one"}` : "")))) : [h("div", { class: "muted" }, "none")])),
       h("div", { class: "tbox" }, h("h4", {}, "Corp SSO"),
         h("div", {}, h("span", { class: t.sso ? "pill ok" : "pill off" }, t.sso ? "connected" : "not configured")),
-        h("small", {}, t.sso ? `${t.sso.issuer} · client ${t.sso.client} · ${t.sso.directory}` : "portal sign-in falls back to Open WebUI passwords")),
+        h("small", {}, t.sso ? `${t.sso.issuer} · client ${t.sso.client} · ${t.sso.directory}` + (t.sso.auto_enrol ? " · people it knows enrol themselves on first use" : " · self-enrolment off") : "portal sign-in falls back to Open WebUI passwords")),
       h("div", { class: "tbox" }, h("h4", {}, "Key lookup in LiteLLM"),
         h("div", {}, h("span", { class: t.litellm.configured ? "pill ok" : "pill off" }, t.litellm.configured ? "connected" : "not configured")),
         h("small", {}, t.litellm.configured ? `${t.litellm.role} · ${t.litellm.url} · ${t.litellm.linking}` : "accounts get no keys automatically")));
@@ -747,11 +812,13 @@ $("#audit-refresh").addEventListener("click", loadAudit);
 /* ---------- memories ---------- */
 async function loadTurns() {
   $("#list").replaceChildren(h("div", { class: "loading" }, h("span", { class: "spin" })));
-  try { S.turns = (await api("/portal/api/memories")).turns; }
+  try { const r = await api("/portal/api/memories?project=all"); S.turns = r.turns; S.projects = r.projects; S.sharedInfo = r.shared || {}; }
   catch (e) { $("#list").replaceChildren(h("div", { class: "empty" }, e.message)); return; }
+  if (!S.projects.includes(S.project)) S.project = "all";
   S.sel.clear(); renderChips(); renderList();
   $("#tab-count").textContent = S.turns.filter(t => !t.automatic).length;
 }
+function inProject(t) { return S.project === "all" || t.project === S.project; }
 const CHIP_DEFS = [
   ["all", "All", t => !t.automatic],
   ["Open WebUI", "Open WebUI", t => t.source === "Open WebUI" && !t.automatic],
@@ -761,19 +828,30 @@ const CHIP_DEFS = [
   ["auto", "Automatic", t => !!t.automatic],
 ];
 function renderChips() {
+  const pc = $("#project-chips"); pc.replaceChildren();
+  const projects = S.projects || [];
+  pc.classList.toggle("hidden", projects.length < 2);
+  if (projects.length > 1) {
+    pc.append(h("span", { class: "muted", style: "font-size:12.5px;align-self:center;margin-right:4px" }, "Project:"));
+    for (const [id, label] of [["all", "All projects"], ...projects.map(p => [p, S.sharedInfo && S.sharedInfo[p] ? `${p} · shared` : p])]) {
+      const n = S.turns.filter(t => !t.automatic && (id === "all" || t.project === id)).length;
+      const info = S.sharedInfo && S.sharedInfo[id];
+      pc.append(h("button", { class: "chip" + (S.project === id ? " on" : ""), title: id === "all" ? "" : info ? `${info.namespace}, shared by ${info.owner}` : `${S.me.namespaces[0].org_id}/${id}`, onclick: () => { S.project = id; renderChips(); renderList(); } }, label, h("span", { class: "n" }, n)));
+    }
+  }
   const c = $("#chips"); c.replaceChildren();
   for (const [id, label, fn] of CHIP_DEFS) {
-    const n = S.turns.filter(fn).length;
+    const n = S.turns.filter(t => inProject(t) && fn(t)).length;
     if (id !== "all" && !n) continue;
     c.append(h("button", { class: "chip" + (S.chip === id ? " on" : ""), onclick: () => { S.chip = id; renderChips(); renderList(); } }, label, h("span", { class: "n" }, n)));
   }
-  const autos = S.turns.filter(t => t.automatic).length;
+  const autos = S.turns.filter(t => t.automatic && inProject(t)).length;
   $("#auto-banner").classList.toggle("hidden", !autos);
   $("#auto-text").textContent = `${autos} ${autos === 1 ? "entry is" : "entries are"} Open WebUI's own background work (chat titles, tags), not things you said. They're hidden from your list.`;
 }
 function visible() {
   const fn = (CHIP_DEFS.find(c => c[0] === S.chip) || CHIP_DEFS[0])[2], q = S.q.trim().toLowerCase();
-  return S.turns.filter(t => fn(t) && (!q || (t.you || "").toLowerCase().includes(q) || (t.reply || "").toLowerCase().includes(q)));
+  return S.turns.filter(t => inProject(t) && fn(t) && (!q || (t.you || "").toLowerCase().includes(q) || (t.reply || "").toLowerCase().includes(q)));
 }
 function clampText(text, cls, lines) {
   const p = h("div", { class: `msg ${cls} clamp${lines}` }, text), wrap = h("div", {}, p);
@@ -790,6 +868,8 @@ function turnCard(t) {
   if (t.you) lines.push(h("div", { class: "line" }, h("div", { class: "who-ic you" }, "YOU"), clampText(t.you, "you", 3)));
   if (t.reply) lines.push(h("div", { class: "line" }, h("div", { class: "who-ic ai" }, "AI"), clampText(t.reply, "ai", 2)));
   const badges = [h("span", {}, when(t.at)), h("span", { class: "badge" + (t.source === "Added by you" ? " mine" : "") }, t.source)];
+  if (t.project && (S.projects || []).length > 1) badges.push(h("span", { class: "badge", title: t.shared ? "a project shared with you" : "project" }, t.shared ? `${t.project} · shared` : t.project));
+  if (t.shared && !t.mine) badges.push(h("span", { class: "badge", title: "written by someone else; only they or the owner can delete it" }, "theirs"));
   if (t.automatic) badges.push(h("span", { class: "badge auto" }, `Automatic · ${t.automatic}`));
   const acts = h("div", { class: "acts" });
   const del = h("button", { class: "icon-btn", title: "Delete", onclick: () => {
@@ -812,7 +892,10 @@ function renderList() {
 }
 async function remove(ids, card) {
   try {
-    await api("/portal/api/memories/delete", { body: { ids } });
+    // Deletes are per project: group the ids by the project their turn lives in.
+    const byProject = {};
+    for (const t of S.turns) for (const id of t.ids) if (ids.includes(id)) (byProject[t.project || ""] ||= []).push(id);
+    for (const [project, pids] of Object.entries(byProject)) await api("/portal/api/memories/delete", { body: { ids: pids, project } });
     card && card.remove();
     S.turns = S.turns.filter(t => !t.ids.some(id => ids.includes(id)));
     ids.forEach(id => S.sel.delete(id));
@@ -832,7 +915,8 @@ function renderSel() {
 async function recall(q) {
   const out = $("#recall-out"); out.replaceChildren(h("div", { class: "loading" }, h("span", { class: "spin" })));
   try {
-    const { items } = await api("/portal/api/recall", { body: { query: q } });
+    const project = $("#recall-project").classList.contains("hidden") ? "" : $("#recall-project").value;
+    const { items } = await api("/portal/api/recall", { body: { query: q, project } });
     out.replaceChildren();
     if (!S.me.namespaces[0].enabled) out.append(h("div", { class: "banner" }, "Memory is paused, so right now nothing would actually be recalled. This is what would be, once it's on."));
     if (!items.length) { out.append(h("div", { class: "empty" }, h("h3", {}, "Nothing would be recalled"), h("div", {}, "The assistant would answer this without any memory."))); return; }
@@ -869,7 +953,12 @@ for (const tab of $$(".tab")) tab.addEventListener("click", () => {
   for (const id of ["access", "memories", "recall", "admin"]) $(`#t-${id}`).classList.toggle("hidden", id !== S.tab);
   if (S.tab === "access") loadHistory();
   if (S.tab === "admin") loadAdmin();
-  if (S.tab === "recall") $("#recall-q").focus();
+  if (S.tab === "recall") {
+    const many = (S.projects || []).length > 1, sel = $("#recall-project");
+    sel.classList.toggle("hidden", !many);
+    if (many && !sel.options.length) projectOptions(sel, S.me.namespaces[0].project_id);
+    $("#recall-q").focus();
+  }
 });
 $("#filter").addEventListener("input", e => { S.q = e.target.value; renderList(); renderSel(); });
 $("#select-btn").addEventListener("click", () => { S.selecting = !S.selecting; S.sel.clear(); renderList(); renderSel(); });
@@ -880,14 +969,24 @@ $("#sel-del").addEventListener("click", async () => {
   if (!ids.length || !confirm(`Delete ${visible().filter(t => t.ids.every(id => S.sel.has(id))).length} selected memories?`)) return;
   await remove(ids, null); S.selecting = false; renderList(); renderSel();
 });
-$("#auto-clean").addEventListener("click", () => remove(S.turns.filter(t => t.automatic).flatMap(t => t.ids), null));
-$("#add-btn").addEventListener("click", () => { $("#add-text").value = ""; $("#dlg-add").showModal(); $("#add-text").focus(); });
+$("#auto-clean").addEventListener("click", () => remove(S.turns.filter(t => t.automatic && inProject(t)).flatMap(t => t.ids), null));
+function projectOptions(sel, current) {
+  sel.replaceChildren(...(S.projects || [S.me.namespaces[0].project_id]).map(p => h("option", { value: p, selected: p === current }, p)));
+}
+$("#add-btn").addEventListener("click", () => {
+  $("#add-text").value = "";
+  const many = (S.projects || []).length > 1;
+  $("#add-project-row").classList.toggle("hidden", !many);
+  if (many) projectOptions($("#add-project"), S.project === "all" ? S.me.namespaces[0].project_id : S.project);
+  $("#dlg-add").showModal(); $("#add-text").focus();
+});
 $("#add-form").addEventListener("submit", async e => {
   if (e.submitter && e.submitter.value !== "save") return;
   e.preventDefault();
   const text = $("#add-text").value.trim(); if (!text) return;
   $("#add-save").disabled = true;
-  try { await api("/portal/api/memories/add", { body: { text } }); $("#dlg-add").close(); toast("Saved; it may take a few seconds to be searchable"); await loadTurns(); refreshMe(); }
+  const project = (S.projects || []).length > 1 ? $("#add-project").value : "";
+  try { await api("/portal/api/memories/add", { body: { text, project } }); $("#dlg-add").close(); toast("Saved; it may take a few seconds to be searchable"); await loadTurns(); refreshMe(); }
   catch (err) { toast(err.message); }
   finally { $("#add-save").disabled = false; }
 });

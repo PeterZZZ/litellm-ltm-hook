@@ -277,8 +277,10 @@ minutes, and from the Admin tab's "Reconcile" button, it re-reads LiteLLM's key
 list and drops keys that are gone, blocked or reassigned.
 
 Carol is left out on purpose: the end-to-end checks expect one person with a
-Keycloak login and a LiteLLM key but no memory account, so her key is never
-linked. Later accounts can be
+Keycloak login and a LiteLLM key but no memory account, so that her first chat
+shows self-enrolment (anyone Corp SSO knows is enrolled on first use, with a
+default project; `MOCK_PLATFORM_AUTO_ENROL=0` makes enrolment admin-only). The
+checks delete her account again at the end. Later accounts can be
 created from the portal instead (Admin tab); the platform then takes the
 employee ID from Keycloak and finds the personal keys in LiteLLM itself.
 
@@ -366,7 +368,7 @@ the master key). Unit tests, no network:
 uv run --group platform pytest -q test_hook.py test_platform.py test_portal.py test_sso.py test_linking.py
 ```
 
-Last tested at commit `e839a82` (rows 7, 9, 2, 3, the portal fixes, and the hook adapters from PR #1: 41/41 plus a Claude Code round trip)
+Last tested at commit `08309a7` (rows 7, 9, 2, 3, 12, the hook adapters from PR #1, every project in the Memories tab, self-enrolment on first use, and sharing: 48/48 plus a Claude Code round trip)
 on branch `feat/mock-platform`; the shared VM should run that or later.
 
 To use it from a laptop, forward every port the browser touches; Keycloak's

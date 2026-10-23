@@ -35,7 +35,9 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, Response
 
 from .authorize import (DECISION_HEADER, ENDPOINT_NOT_ALLOWED, KEY_ID_HEADER, KEY_OWNER_HEADER,
-                        REQUEST_ID_HEADER, Denied, Principal, authorize)
+                        NOT_ENROLLED, REQUEST_ID_HEADER, TOKEN_USER_UNKNOWN, Denied, Principal,
+                        authorize)
+from .enrol import Enroller
 from .linking import RECONCILE_SECONDS, KeyLinker
 from .registry import Registry
 
@@ -56,12 +58,16 @@ def create_app(
     sso=None,
     linker: Optional[KeyLinker] = None,
     reconcile_seconds: float = RECONCILE_SECONDS,
+    auto_enrol: bool = True,
+    enroller: Optional[Enroller] = None,
 ) -> FastAPI:
     """The platform API; with `owui_url` or `sso`, also the portal at /portal/.
 
     With `litellm_url` and `litellm_key` (a read-only LiteLLM identity) the
     platform links unknown personal keys itself on their first call and
     reconciles its keys with LiteLLM every `reconcile_seconds` (0: never).
+    With `sso` and `auto_enrol`, a person Corp SSO knows is enrolled on their
+    first call instead of being refused as not-enrolled (enrol.py).
     """
     core_url = core_url.rstrip("/")
     known_projects: set[tuple[str, str]] = set()
@@ -70,6 +76,9 @@ def create_app(
         return httpx.AsyncClient(timeout=timeout, transport=transport)
 
     linker = linker or KeyLinker(registry, litellm_url, litellm_key, client)
+    enroller = enroller or Enroller(registry, sso, enabled=auto_enrol)
+    if enroller.configured:
+        linker.enrol = enroller.by_person
 
     @contextlib.asynccontextmanager
     async def lifespan(_app: FastAPI):
@@ -96,7 +105,18 @@ def create_app(
             # ask that LiteLLM whose it is before deciding.
             await linker.link_unknown(key_hash, (request.headers.get(KEY_OWNER_HEADER) or "").strip())
         try:
-            principal = authorize(registry, request.headers, body=body)
+            try:
+                principal = authorize(registry, request.headers, body=body)
+            except Denied as first:
+                # A verified token naming someone the registry does not know:
+                # enrol them if Corp SSO knows them, then decide again.
+                email = first.context.get("email")
+                if not (first.decision == NOT_ENROLLED and first.reason == TOKEN_USER_UNKNOWN
+                        and email and enroller.configured):
+                    raise
+                if await enroller.by_email(email, "openwebui") is None:
+                    raise
+                principal = authorize(registry, request.headers, body=body)
         except Denied as exc:
             log.info("op=%s decision=%s status=%s reason=%r namespace=%s request=%s",
                      op, exc.decision, exc.status, exc.reason,
@@ -197,7 +217,7 @@ def create_app(
         from .portal import mount_portal
 
         mount_portal(app, registry, core_url, owui_url, client, litellm_url, litellm_key, sso=sso,
-                     linker=linker)
+                     linker=linker, enroller=enroller)
 
     # Registered last, so every path and method above wins. The portal keeps
     # its own answers for its own unknown paths.
@@ -268,6 +288,8 @@ def _from_env() -> FastAPI:
         litellm_key=os.environ.get("MOCK_PLATFORM_LITELLM_KEY") or None,
         sso=_sso_from_env(),
         reconcile_seconds=float(os.environ.get("MOCK_PLATFORM_RECONCILE_SECONDS", RECONCILE_SECONDS)),
+        # People Corp SSO knows enrol themselves on first use (Leo, Oct 22).
+        auto_enrol=os.environ.get("MOCK_PLATFORM_AUTO_ENROL", "1").strip() != "0",
     )
 
 
