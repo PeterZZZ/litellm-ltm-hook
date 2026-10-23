@@ -391,7 +391,7 @@ LiteLLM's own dashboard is at `http://127.0.0.1:4011/ui` (user `admin`, password
 | New SSO users cannot chat | `DEFAULT_USER_ROLE` defaults to `pending` | `DEFAULT_USER_ROLE=user` before first start, or approve them as admin |
 | Chat titles and tags show up as memories | Open WebUI's background tasks used a `memmachine-` model | Point the task model at the plain model (`TASK_MODEL_EXTERNAL=glm-5.2`) |
 | Open WebUI writes to Postgres | It inherited LiteLLM's `DATABASE_URL` | Set its own `sqlite:///` `DATABASE_URL` in `openwebui.env` |
-| LiteLLM refuses to start: "must not be set with MEMMACHINE_PLATFORM=1" | `FORWARD_USER_INFO_HEADER_JWT_SECRET` reached LiteLLM | Leave it empty in `litellm.env`; it belongs to Open WebUI and the platform only |
+| LiteLLM refuses to start: "must not be set for the hook" | `FORWARD_USER_INFO_HEADER_JWT_SECRET` reached LiteLLM | Leave it empty in `litellm.env`; it belongs to Open WebUI and the platform only |
 | `/user/new` returns 409 | Another LiteLLM user already has that email | Delete or rename the old user first |
 | `employee_id` missing from tokens | Keycloak's declarative user profile drops undeclared attributes | `keycloak_setup.py` declares it; rerun the script |
 | Scripted Keycloak login gets 400 | Keycloak's cookies are Secure; Python's cookie jar won't send them over http | Use `tools/sso_browser.py`; browsers accept them on 127.0.0.1 |

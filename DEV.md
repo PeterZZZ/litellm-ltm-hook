@@ -39,7 +39,7 @@ metadata keys: [..., 'user_api_key_user_id', ..., 'user_api_key_user_email',
               'user_api_key_hash', ...]
 ```
 
-So identity is resolved once, in the pre-call hook, from `user_api_key_dict`, and kept with the turn until it is stored; the store event only finds the turn again (by the key's hash, `user_api_key_hash`, and LiteLLM's call id). In direct mode (`direct_identity()`) it deliberately ignores request headers/body metadata and the virtual-key `user_id` as identity sources. A missing email means no memory instead of falling through to a shared `"default"` user. The email is slugified and that canonical value is used by `producer`, `produced_for`, and the default personal org.
+So identity is resolved once, in the pre-call hook, from `user_api_key_dict`, and kept with the turn until it is stored; the store event only finds the turn again (by the key's hash, `user_api_key_hash`, and LiteLLM's call id). `request_identity()` proposes the person to the Platform: the user named by Open WebUI's signed token, else the virtual key's owner (`user_id`). Request body metadata and unsigned headers are never identity sources. A request with no usable person gets no memory instead of falling through to a shared `"default"` user.
 
 ## 4. MemMachine API quirks (self-hosted, `/api/v2` prefix)
 
@@ -122,15 +122,12 @@ The dead-letter file (`MEMMACHINE_DEAD_LETTER`, mode 0600) holds prompts and ans
 
 Failure logs use the standard `memmachine_hook.errors` logger independently of `MEMMACHINE_DEBUG`. They contain only operation, category, status, org/project, request ID, and exception type; upstream response bodies, queries, authorization headers, and keys are not logged.
 
-## 10. Planned identity/Authz integration (deferred)
+## 10. Identity and authorization
 
-The PoC currently derives the canonical user from the virtual-key owner email and accepts `x-memmachine-org` / `x-memmachine-project` as unverified namespace selectors. The raw MemMachine API has no authorization layer yet.
+The hook's search and store calls go through the MemMachine Platform, which authenticates the LiteLLM deployment (service credential), the virtual key and Open WebUI's signed token, and authorizes the requested org/project (`mock_platform/` in development). The hook never calls MemMachine directly.
 
 Deferred design items:
 
-- Reconsider a server-managed virtual-key metadata field such as `memmachine_username`. This would provide a GitHub-style handle independent of email; a user's default personal org would have the same handle. Until this is explicitly adopted, email remains the only identity source.
-- When MemMachine Authz exists, associate each LiteLLM virtual key with a MemMachine Authz credential. A direct metadata secret is acceptable only as an initial PoC; replace it with an opaque credential reference plus a protected secret store before production.
-- Route hook search/store calls through Authz, and restrict raw MemMachine API access to Authz. Authz must validate the associated credential against the requested org/project.
 - Define an Authz preflight contract if write permission must be reported before the LLM call. Without preflight, a store-time 401/403 can only be logged because the response has already been delivered.
 - Require Authz to use 401/403 for authentication/authorization failures. A 404 must mean an authorized but absent MemMachine namespace so the hook can safely treat it as empty memory.
 
@@ -139,7 +136,6 @@ Deferred design items:
 - **Claude Code user-message wrappers** — Claude Code's requests go to its own adapter, which strips its wrapper blocks (`<system-reminder>` and the like) from the text used for memory search and storage, without changing the prompt sent to the LLM.
 - **Semantic memory availability** — semantic memory is currently `[]` on this deployment, so its enabled behavior is covered by mocked tests. The hook intentionally accepts MemMachine's default org-set + project-set search scope; enabling org-level categories may surface semantic features derived from other projects in the same org.
 - **Episodic recall includes every producer in the namespace** — user, collaborator, and assistant episodes in the selected org/project are all eligible. `producer_id` remains stored for provenance and explicit administrative queries.
-- **Org/project selectors are not authorized yet** — `x-memmachine-org` and `x-memmachine-project` are accepted directly for PoC use. Do not treat this as a production isolation boundary until the planned Authz gateway validates access.
 - **Store path is async** — `async_log_success_event` runs after the response completes. If the LLM call fails, nothing is stored (intentional).
 - **Store failures never reach the user** — the LLM response has already completed; failed stores are retried and dead-lettered (section 9). Alerting and an Authz write preflight remain deferred above.
 - **Streaming** — `async_log_success_event` is still called after streaming finishes. The pre-call injection is unaffected by streaming.

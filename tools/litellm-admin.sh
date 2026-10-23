@@ -15,8 +15,7 @@
 #
 # ID is the person's ID as the hook and the platform name them: their employee ID
 # (case kept, e.g. E12345), else their email. EMAIL is stored as the LiteLLM
-# user's user_email (the platform finds the person by it; the hook's direct mode
-# uses it as the identity).
+# user's user_email (the platform finds the person by it).
 #
 # Settings, from the environment or from LITELLM_ENV (default $ENV_DIR/litellm.env,
 # else ./litellm.env; see SETUP.md):

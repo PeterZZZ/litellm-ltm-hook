@@ -12,7 +12,6 @@ import time
 from pathlib import Path
 
 os.environ.setdefault("MEMMACHINE_BASE_URL", "http://platform.unit.test")
-os.environ.setdefault("MEMMACHINE_PLATFORM", "1")
 os.environ.setdefault("MEMMACHINE_API_KEY", "svc-litellm")
 
 import httpx
@@ -1097,6 +1096,16 @@ class TestReplay:
         assert remaining == ["Q1", "Q9"]
         assert not (tmp_path / "dead.jsonl.replaying").exists()
 
+    def test_replay_reads_records_with_fields_added_or_removed_since(self, mm, tmp_path):
+        old = {"ts": 1, "reason": "restart", "user": "alice", "org_id": "alice", "project_id": "main",
+               "session_id": "s1", "prompt_id": "p1", "prompt": "q", "answer": "a",
+               "key_id": "hash-alice", "credential_ref": "from the mmc variant: ignored",
+               "kind": "answer", "tool_steps": 0}   # labels, since removed
+        path = tmp_path / "dead.jsonl"
+        path.write_text(json.dumps(old) + "\n")
+        assert run(h.replay_dead_letter(path, transport=httpx.MockTransport(mm))) == (1, 0, 0)
+        assert "kind" not in mm.stored[0]["messages"][0]["metadata"]
+
 
 class TestFrontends:
     """Adapters: which requests get memory, and who they are for. Claude Code's
@@ -1289,14 +1298,13 @@ class TestFrontends:
         self.chat(hook, {"x-memmachine-client": "claude-code"}, user="alice", call_type="acompletion")
         assert len(seen) == 2 and not any("unknown_frontend" in r.message for r in caplog.records)
 
-    def test_claude_code_sends_its_client_and_any_user_header_for_platform_to_judge(self, hook):
+    def test_an_unsigned_user_header_names_no_one(self, hook):
         seen, handle = self.recorder()
         hook.transport = httpx.MockTransport(handle)
         run(call(hook, req(prompt_msgs("Q"), extra={"x-openwebui-user-email": "bob"})))
         hdr = seen[0][1]
-        assert (hdr["x-memmachine-client"], hdr["x-memmachine-key-owner"], hdr["x-memmachine-user"]) == \
-            ("claude-code", "alice", "bob")
-        assert seen[0][2]["org_id"] == "bob"        # what it asked for; Platform refuses a personal key
+        assert (hdr["x-memmachine-client"], hdr["x-memmachine-key-owner"]) == ("claude-code", "alice")
+        assert "x-memmachine-user" not in hdr and seen[0][2]["org_id"] == "alice"
 
     def test_replay_drops_a_frontend_users_store_refused_401(self, hook, tmp_path):
         path = tmp_path / "dead.jsonl"
@@ -1306,103 +1314,6 @@ class TestFrontends:
         stored, left, dropped = run(h.replay_dead_letter(
             path, transport=httpx.MockTransport(lambda r: httpx.Response(401))))
         assert (stored, left, dropped) == (0, 1, 1)                 # the plain 401 stays for a fixed setup
-
-
-class TestDirectMode(TestFrontends):
-    """MEMMACHINE_PLATFORM unset: the hook talks to MemMachine itself and decides who
-    the person is (the key owner's email, or Open WebUI's token, checked here)."""
-
-    SECRET = "s" * 32
-
-    @pytest.fixture(autouse=True)
-    def direct(self, monkeypatch):
-        import jwt
-        monkeypatch.setattr(h, "PLATFORM_MODE", False)
-        monkeypatch.setattr(h, "SERVICE_CREDENTIAL", "mm-key")
-        monkeypatch.setattr(h, "FORWARD_USER_INFO_HEADER_JWT_SECRET", self.SECRET)
-        monkeypatch.setattr(h, "jwt", jwt, raising=False)
-
-    def run_chat(self, hook, headers, **kw):
-        seen, handle = self.recorder()
-        hook.transport = httpx.MockTransport(handle)
-        self.chat(hook, headers, **kw)
-        return seen
-
-    def test_the_person_is_the_keys_email_and_only_the_api_key_is_sent(self, hook):
-        seen = self.run_chat(hook, {}, user="alice", key=FakeKey("alice", user_email="Alice@Corp.com"))
-        for _, hdr, body in seen:
-            assert hdr["authorization"] == "Bearer mm-key"
-            assert not [k for k in hdr if k.startswith("x-memmachine")]
-            assert body["org_id"] == "Alice_Corp_com"
-        assert seen[1][2]["messages"][0]["producer"] == "Alice_Corp_com"
-
-    def test_a_key_identified_request_may_choose_its_namespace(self, hook):
-        seen = self.run_chat(hook, {"x-memmachine-org": "team", "x-memmachine-project": "p"}, user="alice",
-                             key=FakeKey("alice", user_email="a@x.com"))
-        assert (seen[0][2]["org_id"], seen[0][2]["project_id"]) == ("team", "p")
-
-    def test_a_good_token_names_the_person(self, hook):
-        seen = self.run_chat(hook, {"x-openwebui-user-jwt": self.token(secret=self.SECRET)})
-        assert seen[0][2]["org_id"] == "bob_corp_com" and "x-memmachine-user-assertion" not in seen[0][1]
-
-    @pytest.mark.parametrize("headers", [
-        lambda t: {"x-openwebui-user-jwt": t(secret="w" * 32)},                    # wrong secret
-        lambda t: {"x-openwebui-user-jwt": t(secret="s" * 32, expires_in=-120)},   # expired
-        lambda t: {"x-openwebui-user-jwt": t(secret="s" * 32), "x-memmachine-org": "alice"},
-        lambda t: {"x-openwebui-user-jwt": t(secret="s" * 32), "x-memmachine-project": "p"},
-    ])
-    def test_a_token_that_is_not_good_is_no_memory_never_the_key(self, hook, headers):
-        seen = self.run_chat(hook, headers(self.token), key=FakeKey("svc-openwebui", user_email="app@corp.com"))
-        assert seen == []
-
-    def test_two_people_behind_one_shared_key_stay_apart(self, hook):
-        seen, handle = self.recorder()
-        hook.transport = httpx.MockTransport(handle)
-        for email in ("alice@corp.com", "bob@corp.com"):
-            self.chat(hook, {"x-openwebui-user-jwt": self.token(email=email, secret=self.SECRET)})
-        assert [b["org_id"] for _, _, b in seen] == ["alice_corp_com"] * 2 + ["bob_corp_com"] * 2
-
-    def test_a_token_from_a_clock_a_little_ahead_is_accepted(self, hook):
-        import jwt
-        now = int(time.time()) + 20                                  # within the 30 s margin
-        token = jwt.encode({"email": "bob@corp.com", "iss": "open-webui", "iat": now, "nbf": now,
-                            "exp": now + 300}, self.SECRET, algorithm="HS256")
-        assert self.run_chat(hook, {"x-openwebui-user-jwt": token})[0][2]["org_id"] == "bob_corp_com"
-
-    def test_no_email_no_memory(self, hook):
-        assert self.run_chat(hook, {}, user="alice") == []
-
-    # Platform-mode behaviour, not direct mode's.
-    test_a_chat_request_is_one_turn_for_the_signed_in_user = None
-    test_the_person_claim_is_a_setting = None
-    test_any_other_client_is_its_keys_owner = None
-    test_claude_code_sends_its_client_and_any_user_header_for_platform_to_judge = None
-    test_replay_drops_a_frontend_users_store_refused_401 = None
-    test_the_block_goes_right_before_the_prompt_in_its_own_words = None
-    test_a_history_with_a_block_gets_no_search_but_is_stored = None
-    test_responses_route = None
-    test_a_reasoning_models_thinking_is_the_answer_when_it_gave_none = None
-    test_a_refused_search_never_fails_the_request = None
-    test_a_404_search_is_an_empty_namespace_not_an_outage = None
-    test_a_failed_store_is_retried_then_kept_and_replays_in_its_format = None
-    test_requests_that_get_no_memory = None
-    test_open_webui_naming_itself_is_labelled_so_without_a_token = None
-    test_the_named_adapter_wins_over_recognition = None
-    test_claude_code_named_without_its_hint_headers_gets_no_memory = None
-    test_an_unknown_name_falls_back_and_is_logged_once = None
-    test_a_known_name_on_a_route_its_adapter_does_not_serve_falls_back_quietly = None
-
-
-def test_direct_mode_keeps_the_secret_and_platform_mode_refuses_it(tmp_path):
-    import subprocess, sys
-    base = {k: v for k, v in os.environ.items() if k != "MEMMACHINE_PLATFORM"}
-    env = {**base, "FORWARD_USER_INFO_HEADER_JWT_SECRET": "s" * 32, "MEMMACHINE_DEAD_LETTER": str(tmp_path / "d")}
-    direct = subprocess.run([sys.executable, "-c", "import memmachine_hook"], env=env, capture_output=True,
-                            text=True, cwd=str(Path(h.__file__).parent))
-    assert direct.returncode == 0, direct.stderr[-1500:]
-    platform = subprocess.run([sys.executable, "-c", "import memmachine_hook"], capture_output=True, text=True,
-                              env={**env, "MEMMACHINE_PLATFORM": "1"}, cwd=str(Path(h.__file__).parent))
-    assert platform.returncode != 0 and "FORWARD_USER_INFO_HEADER_JWT_SECRET" in platform.stderr
 
 
 # ---------- the recorded interactive session ----------
@@ -1445,184 +1356,6 @@ class TestRecordedSession:
         assert pairs[2][1].startswith("The Explore subagent finished")
         # The prompt after /compact started no subagent: stored without a next prompt.
         assert pairs[3][0] == queries[3]
-
-
-# ---------- approach P1 (recall experiments) ----------
-
-class TestP1:
-    def test_off_by_default(self):
-        assert (h.LABELS, h.SKIP_KINDS, h.REDACT, h.SHORT_PROMPT_CHARS, h.SPLIT_QUERIES, h.BLOCK_STYLE) \
-            == (False, (), False, 0, False, "flat")
-
-    def test_kinds(self):
-        block = "<memory>- user: our release branch is rel/ochre\n</memory>"
-        assert h.turn_kind("fix it", "Done.", 2, block) == "task"
-        assert h.turn_kind("thanks", "You're welcome!", 0, block) == "ack"
-        assert h.turn_kind("What's our release branch?", "The release branch is rel/ochre.", 0, block) == "recall"
-        # Not a question: new information, even if the words are familiar.
-        assert h.turn_kind("Our release branch is rel/ochre, remember it.",
-                           "Noted: release branch rel/ochre.", 0, block) == "answer"
-        assert h.turn_kind("What's our release branch?", "The release branch is rel/ochre.", 0, None) == "answer"
-
-    def test_labels_and_filter(self, hook, mm, monkeypatch):
-        monkeypatch.setattr(h, "LABELS", True)
-        monkeypatch.setattr(h, "SKIP_KINDS", ("recall", "ack"))
-
-        async def go():
-            data = req(prompt_msgs("Fix the failing test"))
-            await call(hook, data)
-            await answer(hook, "", tool_calls=TOOL_CALL)
-            await call(hook, req(tool_step(data["messages"])))
-            await answer(hook, "Fixed it.")
-            await drain(hook)
-        run(go())
-        assert mm.searches[0]["filter"] == "metadata.kind IS NULL OR metadata.kind NOT IN ('recall','ack')"
-        meta = mm.stored[0]["messages"][0]["metadata"]
-        assert (meta["kind"], meta["tool_steps"]) == ("task", "1")
-
-    def test_no_labels_no_filter(self, hook, mm):
-        async def go():
-            await call(hook, req(prompt_msgs("Fix the failing test")))
-            await answer(hook, "Fixed it.")
-            await drain(hook)
-        run(go())
-        assert "filter" not in mm.searches[0]
-        assert "kind" not in mm.stored[0]["messages"][0]["metadata"]
-
-    @pytest.mark.parametrize("secret", [
-        "ghp_" + "aB3" * 12, "AKIAABCDEFGHIJ012345", "sk-proj-abcdefghijklmnop1234",
-        "xoxb-1234567890-abcdef", "Wq3/kT9+zR2mXv8LpN4sY7bC1dF6gH0jK5eA2uQ9",
-    ])
-    def test_redact_formats(self, secret):
-        assert secret not in h.redact(f"the token is {secret} ok")
-
-    def test_redact_assignments_and_leaves_ordinary_text(self):
-        out = h.redact("DB_PASSWORD=hunter22 and API_KEY: s3cr3tvalue")
-        assert "hunter22" not in out and "s3cr3tvalue" not in out and out.startswith("DB_PASSWORD=")
-        plain = ("commit 3f9a1c2b7d4e5f60718293a4b5c6d7e8f9012345 in "
-                 "/opt/claude-litellm/memmachine/src/packages/server ranges.py parse_range")
-        assert h.redact(plain) == plain
-
-    def test_redact_stored_and_searched(self, hook, mm, monkeypatch):
-        monkeypatch.setattr(h, "REDACT", True)
-        token = "ghp_" + "Zx9" * 12
-
-        async def go():
-            await call(hook, req(prompt_msgs(f"Keep this: the deploy token is {token}")))
-            await answer(hook, f"Noted, the token is {token}.")
-            await drain(hook)
-        run(go())
-        assert token not in mm.searches[0]["query"]
-        assert token not in json.dumps(mm.stored) and "[REDACTED]" in mm.stored[0]["messages"][0]["content"]
-
-    def test_short_prompt_carries_what_it_replies_to(self, hook, mm, monkeypatch):
-        monkeypatch.setattr(h, "SHORT_PROMPT_CHARS", 40)
-        history = [user_msg("Propose two ways to handle empty input"),
-                   {"role": "assistant", "content": [{"type": "text", "text": "1. Return []. 2. Raise ValueError."}]}]
-
-        async def go():
-            await call(hook, req(prompt_msgs("2", history), pid="p2"))
-            await answer(hook, "Done: it raises now.", pid="p2")
-            await drain(hook)
-        run(go())
-        expected = '(replying to: "1. Return []. 2. Raise ValueError.")\n2'
-        assert mm.searches[0]["query"] == expected
-        assert mm.stored_pairs() == [(expected, "Done: it raises now.")]
-
-    def test_long_prompt_is_unchanged(self, hook, mm, monkeypatch):
-        monkeypatch.setattr(h, "SHORT_PROMPT_CHARS", 10)
-        history = [user_msg("earlier"), {"role": "assistant", "content": "an answer"}]
-        run(call(hook, req(prompt_msgs("a prompt long enough", history))))
-        assert mm.searches[0]["query"] == "a prompt long enough"
-
-    def test_split_questions(self):
-        assert h.split_questions("Which ticket did we fix? Who owns releases?\nAnd the freeze day?") == [
-            "Which ticket did we fix?", "Who owns releases?", "And the freeze day?"]
-        assert h.split_questions("What is it? ok") == ["What is it? ok"]
-
-    def test_split_queries_search_each_and_interleave(self, hook, mm, monkeypatch):
-        monkeypatch.setattr(h, "SPLIT_QUERIES", True)
-        mm.items = ["a fact"]
-        prompt = "Which ticket did we fix last time? Who owns the releases here?"
-        messages = prompt_msgs(prompt)
-        run(call(hook, req(messages)))
-        assert [s["query"] for s in mm.searches] == ["Which ticket did we fix last time?",
-                                                     "Who owns the releases here?"]
-        assert all(s["top_k"] == 4 for s in mm.searches)
-        assert messages[memory_blocks(messages)[0]]["content"].count("a fact") == 1   # deduplicated
-
-    def test_dated_block_groups_by_prompt_oldest_first(self, monkeypatch):
-        monkeypatch.setattr(h, "BLOCK_STYLE", "dated")
-        items = [
-            {"text": "staging is mango-11 now", "role": "assistant", "date": "2026-10-09T10:00:00Z", "pid": "p3"},
-            {"text": "staging is tamarind-03", "role": "user", "date": "2026-10-08T09:00:00Z", "pid": "p1"},
-            {"text": "Correction: mango-11", "role": "user", "date": "2026-10-09T10:00:00Z", "pid": "p3"},
-            {"text": "a summary"},
-        ]
-        block = h.build_block(items)
-        assert h.DATED_NOTE in block
-        body = block[block.index(h.DATED_NOTE) + len(h.DATED_NOTE):]
-        assert body == ("-\n  a summary\n"
-                        "- 2026-10-08 09:00\n  user: staging is tamarind-03\n"
-                        "- 2026-10-09 10:00\n  user: Correction: mango-11\n  assistant: staging is mango-11 now\n"
-                        "</memory>")
-
-    def test_dated_block_budget_keeps_best_groups(self, monkeypatch):
-        monkeypatch.setattr(h, "BLOCK_STYLE", "dated")
-        monkeypatch.setattr(h, "INJECT_MAX_TOKENS", 200)
-        items = [{"text": "best " * 20, "role": "user", "date": "2026-10-09", "pid": "a"},
-                 {"text": "next " * 100, "role": "user", "date": "2026-10-01", "pid": "b"}]
-        block = h.build_block(items)
-        assert "best" in block and "next" not in block
-
-    def test_replay_reads_records_written_before_labels(self, mm, tmp_path):
-        old = {"ts": 1, "reason": "restart", "user": "alice", "org_id": "alice", "project_id": "main",
-               "session_id": "s1", "prompt_id": "p1", "prompt": "q", "answer": "a",
-               "key_id": "hash-alice", "credential_ref": "from the mmc variant: ignored"}
-        path = tmp_path / "dead.jsonl"
-        path.write_text(json.dumps(old) + "\n")
-        assert run(h.replay_dead_letter(path, transport=httpx.MockTransport(mm))) == (1, 0, 0)
-
-
-
-class TestJoined:
-    """MEMMACHINE_STORE_STYLE=joined: a turn stored as one entry."""
-
-    def test_pair_by_default(self):
-        assert h.STORE_STYLE == "pair"
-
-    def test_stored_as_one_entry_with_labels(self, hook, mm, monkeypatch):
-        monkeypatch.setattr(h, "STORE_STYLE", "joined")
-        monkeypatch.setattr(h, "LABELS", True)
-
-        async def go():
-            await call(hook, req(prompt_msgs("Who signs off on releases?")))
-            await answer(hook, "Mara Lindqvist.")
-            await drain(hook)
-        run(go())
-        (msg,) = mm.stored[0]["messages"]
-        assert msg["content"] == "user: Who signs off on releases?\n\nassistant: Mara Lindqvist."
-        assert msg["role"] == "user"
-        assert (msg["metadata"]["format"], msg["metadata"]["kind"], msg["metadata"]["prompt_id"]) \
-            == ("turn", "answer", "p1")
-
-    def test_shown_as_stored_without_a_role(self):
-        items = h._episodic_items({"long_term_memory": {"episodes": [
-            {"content": "user: q\n\nassistant: a", "producer_role": "user", "metadata": {"format": "turn"}},
-            {"content": "older half", "producer_role": "user"}]}})
-        assert h.build_block(items).endswith("- user: q\n  \n  assistant: a\n- user: older half\n</memory>")
-
-    def test_dated_block(self, monkeypatch):
-        monkeypatch.setattr(h, "BLOCK_STYLE", "dated")
-        items = h._episodic_items({"long_term_memory": {"episodes": [
-            {"content": "user: q\n\nassistant: a", "producer_role": "user", "created_at": "2026-10-12T09:30:00Z",
-             "metadata": {"format": "turn", "prompt_id": "p1"}}]}})
-        assert h.build_block(items).endswith("- 2026-10-12 09:30\n  user: q\n  \n  assistant: a\n</memory>")
-
-    def test_joined_entry_gets_twice_the_length(self, monkeypatch):
-        monkeypatch.setattr(h, "ITEM_MAX_CHARS", 10)
-        assert h._cut("x" * 15) == "x" * 10 + "…"
-        assert h._cut("x" * 15, "turn") == "x" * 15
 
 
 def test_loads_the_way_litellm_loads_a_callback(tmp_path):

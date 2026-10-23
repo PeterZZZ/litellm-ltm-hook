@@ -17,8 +17,8 @@ adapters, unchanged:
   - session: `x-memmachine-session`, else LiteLLM's metadata session_id, else the
     person (a token-identified request) or the key's hash, else "default".
 
-What the core does for every adapter: who the person is (Platform or direct
-mode), the Platform client, a refusal never failing the request, store retries
+What the core does for every adapter: who the person is (proposed to Platform),
+the Platform client, a refusal never failing the request, store retries
 and dead letters, tracing.
 
 This adapter is last in memmachine_hook.default_adapters() and claims every
@@ -143,7 +143,7 @@ class OpenWebUIAdapter(core.Adapter):
         # The label Platform sees: Open WebUI when it says so or signs its user.
         named = core._header(headers, core.H_FRONTEND).lower() == self.frontend
         turn = hook.new_turn(ident, "openwebui" if token or named else "other", str(session_id), call_id, text,
-                             project, hook.clock(), prompt_ids={call_id}, typed=text,
+                             project, hook.clock(), prompt_ids={call_id},
                              style="openwebui", build=build_block)
         turn.in_flight = 1
         hook.sessions[self._key(getattr(user_api_key_dict, "token", None), call_id)] = turn

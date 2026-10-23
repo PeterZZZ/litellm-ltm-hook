@@ -191,14 +191,8 @@ class ClaudeCodeAdapter(core.Adapter):
             else:
                 if turn is not None:
                     hook._flush(hook.sessions.pop(key))
-                text = prompt.text
-                if len(text) < core.SHORT_PROMPT_CHARS:
-                    before = core.previous_assistant_text(messages, prompt.index)
-                    if before:
-                        text = core.with_context(text, before)
-                turn = hook.new_turn(ident, self.name, session_id, prompt_id, text, project, now,
-                                     prompt_ids={prompt_id}, indices={prompt_id: prompt.index},
-                                     typed=prompt.text)
+                turn = hook.new_turn(ident, self.name, session_id, prompt_id, prompt.text, project, now,
+                                     prompt_ids={prompt_id}, indices={prompt_id: prompt.index})
                 hook.start_search(turn, data.get("litellm_call_id"))
                 hook.sessions[key] = turn
                 hook._enforce_cap()
@@ -227,10 +221,7 @@ class ClaudeCodeAdapter(core.Adapter):
         turn = self._finished(hook, kwargs, headers)
         if turn is None:
             return
-        tools = core.tool_names(response_obj)
-        if tools:
-            turn.tool_steps += 1
-        if tools & SUBAGENT_TOOLS:
+        if core.tool_names(response_obj) & SUBAGENT_TOOLS:
             turn.spawned = True
         answer = core.final_answer(response_obj)
         if answer:

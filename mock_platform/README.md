@@ -12,7 +12,7 @@ platform; it is not that platform.
 Open WebUI ──(shared app key + signed user token)──┐
 Claude Code ──(personal virtual key)───────────────┤
                                                    ▼
-                                 LiteLLM (hook, MEMMACHINE_PLATFORM=1)
+                                 LiteLLM (hook)
                                    proposes person + namespace, forwards evidence
                                                    │  Authorization: Bearer <service credential>
                                                    │  X-MemMachine-Key-Id / -Key-Owner
@@ -210,7 +210,6 @@ portal checks passwords against Open WebUI (phase 1).
 And on the LiteLLM side:
 
 ```bash
-MEMMACHINE_PLATFORM=1
 MEMMACHINE_BASE_URL=http://127.0.0.1:8100
 MEMMACHINE_API_KEY=<the service credential>
 MEMMACHINE_OWUI_USER_CLAIM=name       # with SSO; email (the default) without

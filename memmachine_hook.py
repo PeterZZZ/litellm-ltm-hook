@@ -12,10 +12,8 @@ async_pre_call_hook      : the adapter starts or continues a turn; the turn's
 async_log_success_event  : the adapter keeps the turn's answer; the prompt +
                            answer pair is stored when the turn is over
 
-Two modes. Platform mode (MEMMACHINE_PLATFORM=1): MEMMACHINE_BASE_URL is the
-MemMachine Platform; the hook proposes who the person is and Platform decides.
-Direct mode: MEMMACHINE_BASE_URL is MemMachine itself and the hook decides (the
-key owner's email, or Open WebUI's signed token checked here). In short:
+MEMMACHINE_BASE_URL is the MemMachine Platform: the hook proposes who the person
+is and Platform decides. In short:
   - Only `memmachine-` models get memory (MEMMACHINE_MODELS narrows them);
     `x-memmachine-disable: 1` turns memory off for a request.
   - Which adapter: the one the frontend names in `x-memmachine-client`
@@ -33,32 +31,26 @@ key owner's email, or Open WebUI's signed token checked here). In short:
     store Platform refuses with 403 (policy) is dropped, never kept for a later
     grant; a 401 (setup) is dead-lettered, since fixing the setup and replaying
     should store it.
-  - Who the user is, Platform mode: the key LiteLLM authenticated, and the user the request
-    names, if any (MEMMACHINE_USER_HEADER, or the signed token in
-    MEMMACHINE_USER_ASSERTION_HEADER: a frontend's shared key acting for its
-    signed-in user). The hook reports both; Platform decides whether the named
-    user is accepted (a personal key may only act as its owner). The person is
+  - Who the user is: the key LiteLLM authenticated, and the user named by the
+    signed token in MEMMACHINE_FORWARDED_USER_JWT_HEADER, if any (a frontend's
+    shared key acting for its signed-in user; the claim is
+    MEMMACHINE_OWUI_USER_CLAIM). The hook reports both; Platform checks the token
+    and decides whether the named user is accepted. The person is
     the named user, else the key's owner: an employee ID, else an email or a
     user name, case kept; the org is that ID with characters MemMachine ids do
     not allow replaced by `_` and leading or trailing `_` removed (`E12345` ->
     `E12345`, `alice@corp.com` -> `alice_corp_com`), the same rule as Platform's
     `slug`. Other client headers are never passed on.
-  - Who the user is, direct mode: the email in Open WebUI's signed token
-    (FORWARD_USER_INFO_HEADER_JWT_SECRET set and a token in the request), else
-    the key owner's email (LiteLLM user_email); the org is that email by the same
-    rule, or `x-memmachine-org` on a key-identified request. A token that is not
-    good (signature, issuer, expiry, email), or a good one with a namespace
-    header, means no memory, never the key's identity instead.
   - The project is the user's request: `x-memmachine-project: <name>` (for
     Claude Code, ANTHROPIC_CUSTOM_HEADERS in the repo's .claude/settings.json);
     without it, MEMMACHINE_PROJECT_ID. Whether the user may use it is
-    Platform's decision, not the hook's (direct mode: no check).
-  - Platform mode: Platform only authenticates and authorizes, then forwards the
-    request. Each call carries (direct mode: only MemMachine's API key):
+    Platform's decision, not the hook's.
+  - Platform only authenticates and authorizes, then forwards the request. Each
+    call carries:
       Authorization: Bearer <LiteLLM service credential>   (one per deployment)
       X-MemMachine-Key-Id: <hash of the key LiteLLM authenticated>
       X-MemMachine-Key-Owner: <that key's owner, LiteLLM user_id>
-      X-MemMachine-User: <the user the request named>        (if any)
+      X-MemMachine-User: <the user the signed token names>   (if any)
       X-MemMachine-User-Assertion: <the frontend's signed token> (if any)
       X-MemMachine-Project: <the requested project>
       X-MemMachine-Client: <the adapter: claude-code, openwebui, ...>
@@ -79,29 +71,23 @@ config.yaml:
 
 Environment variables (a .env next to this file is read too; real env wins). In
 [brackets]: an older name, still read when the first is unset.
-  MEMMACHINE_BASE_URL            REQUIRED: the Platform (Platform mode) or MemMachine
-  MEMMACHINE_PLATFORM            1 = Platform mode; unset = direct mode
+  MEMMACHINE_BASE_URL            REQUIRED: the Platform
   MEMMACHINE_API_KEY [MEMMACHINE_SERVICE_CREDENTIAL]
-                                 Platform mode, REQUIRED: this LiteLLM's service
-                                 credential. Direct mode: MemMachine's API key, if any
-  FORWARD_USER_INFO_HEADER_JWT_SECRET  Open WebUI's signing secret. Direct mode: the
-                                 hook checks its token with it (PyJWT). Platform mode:
-                                 must NOT be set (nor OPENWEBUI_USER_JWT_SECRET,
-                                 PLATFORM_FRONTEND_SECRET_*): it belongs to Platform,
-                                 and the hook refuses to start
-  MEMMACHINE_FORWARDED_USER_JWT_ISSUER  default open-webui (direct mode)
-  MEMMACHINE_FORWARDED_USER_JWT_LEEWAY  default 30 seconds of clock margin (direct mode)
+                                 REQUIRED: this LiteLLM's service credential
+  FORWARD_USER_INFO_HEADER_JWT_SECRET  Open WebUI's signing secret: must NOT be set
+                                 here (nor OPENWEBUI_USER_JWT_SECRET,
+                                 PLATFORM_FRONTEND_SECRET_*). It belongs to Open
+                                 WebUI and Platform, and the hook refuses to start
+                                 with it
   MEMMACHINE_PROJECT_ID [MEMMACHINE_DEFAULT_PROJECT]  default `default`: the project
                                  when the request names none
   MEMMACHINE_API_PREFIX          default /api/v2 (the memory API's path)
   MEMMACHINE_AGENT_ID            default litellm: the Open WebUI adapter's stored agent id
-  MEMMACHINE_USER_HEADER         default x-openwebui-user-email: Platform mode, a plain
-                                 header naming the user a frontend acts for ("" = none)
   MEMMACHINE_FORWARDED_USER_JWT_HEADER [MEMMACHINE_USER_ASSERTION_HEADER]
                                  default x-openwebui-user-jwt: Open WebUI's signed token
-                                 (Platform mode: passed on as X-MemMachine-User-Assertion)
+                                 (passed on as X-MemMachine-User-Assertion)
   MEMMACHINE_OWUI_USER_CLAIM [MEMMACHINE_USER_ASSERTION_CLAIM]  default email:
-                                 Platform mode, the token claim naming the person
+                                 the token claim naming the person
                                  (`name` with Corp SSO: Open WebUI's name is the
                                  employee ID)
   (Claude Code adapter's settings: memmachine_adapters/claude_code.py)
@@ -132,27 +118,6 @@ Environment variables (a .env next to this file is read too; real env wins). In
                                  store) to stderr, ids only, with LiteLLM's request
                                  id; Platform's audit log has the same id
 
-  Approach P1 (recall experiments, Claude Code side); each is off by default, which is approach P0:
-  MEMMACHINE_LABELS              1 = label each pair: metadata kind = task (tools ran),
-                                 ack (short prompt, short answer), recall (a question
-                                 answered from the memory block), answer (the rest),
-                                 and tool_steps
-  MEMMACHINE_SKIP_KINDS          comma-separated kinds left out of searches, e.g.
-                                 recall,ack (unlabelled entries are still found)
-  MEMMACHINE_REDACT              1 = replace secrets (tokens, keys, NAME=secret values)
-                                 with [REDACTED] in what is stored and searched
-  MEMMACHINE_SHORT_PROMPT_CHARS  a prompt shorter than this is stored and searched with
-                                 the end of the assistant message it replies to; 0 = off
-  MEMMACHINE_SPLIT_QUERIES       1 = a prompt with several questions gets one search
-                                 per question, results interleaved
-  MEMMACHINE_BLOCK_STYLE         flat (default) or dated: items grouped by prompt (the
-                                 question with its answer), dated, oldest first
-
-  Storing a turn:
-  MEMMACHINE_STORE_STYLE         pair (default: the prompt and the answer as two entries)
-                                 or joined (one entry holding both, so a search that
-                                 finds the prompt also returns the answer)
-
 Failures are logged to the `memmachine_hook.errors` logger with ids only, never
 keys, prompts or answers. With MEMMACHINE_TRACE (on by default) each memory step
 (turn, search, store) is also traced, ids only, with LiteLLM's request id, which
@@ -178,7 +143,6 @@ import time
 import types
 from collections import OrderedDict
 from dataclasses import dataclass, field
-from itertools import zip_longest
 from pathlib import Path
 from typing import Callable, Optional
 
@@ -230,64 +194,34 @@ def _env_float(name: str, default: float, *aliases: str) -> float:
 BASE_URL = os.environ.get("MEMMACHINE_BASE_URL", "").rstrip("/")
 if not BASE_URL:
     raise RuntimeError("MEMMACHINE_BASE_URL is required (set it in .env or the real environment).")
-# Platform mode: MEMMACHINE_BASE_URL is the MemMachine Platform; the hook proposes
-# who the person is and Platform decides. Direct mode (unset): MEMMACHINE_BASE_URL
-# is MemMachine itself and the hook decides who the person is.
-PLATFORM_MODE = os.environ.get("MEMMACHINE_PLATFORM", "").strip() == "1"
-# Platform mode: this LiteLLM's service credential. Direct mode: MemMachine's API
-# key, if it needs one.
+# This LiteLLM's service credential, issued by the Platform.
 SERVICE_CREDENTIAL = _setting("MEMMACHINE_API_KEY", "MEMMACHINE_SERVICE_CREDENTIAL")
-if PLATFORM_MODE and not SERVICE_CREDENTIAL:
-    raise RuntimeError("MEMMACHINE_PLATFORM=1 needs MEMMACHINE_API_KEY: the service credential "
-                       "the platform issued to this LiteLLM.")
-# Open WebUI's signing secret (its own variable name). Platform mode: it belongs to
-# Platform only: its tokens are HS256, so whoever can verify one can also mint
-# one, for any user, and the gateway refuses to start with one in its
-# environment. Direct mode: the hook verifies the token with it.
-FORWARD_USER_INFO_HEADER_JWT_SECRET = os.environ.get("FORWARD_USER_INFO_HEADER_JWT_SECRET", "").strip()
+if not SERVICE_CREDENTIAL:
+    raise RuntimeError("MEMMACHINE_API_KEY is required: the service credential the platform "
+                       "issued to this LiteLLM.")
+# A frontend's signing secret belongs to the frontend and Platform only: its tokens
+# are HS256, so whoever can verify one can also mint one, for any user, and the
+# gateway refuses to start with one in its environment. Open WebUI's is
+# FORWARD_USER_INFO_HEADER_JWT_SECRET (its own variable name).
 _SIGNING_SECRETS = ("FORWARD_USER_INFO_HEADER_JWT_SECRET", "OPENWEBUI_USER_JWT_SECRET")
 _SIGNING_SECRET_PREFIX = "PLATFORM_FRONTEND_SECRET_"
 _leaked = sorted(n for n, v in os.environ.items()
                  if v.strip() and (n in _SIGNING_SECRETS or n.startswith(_SIGNING_SECRET_PREFIX)))
-if PLATFORM_MODE and _leaked:
+if _leaked:
     raise RuntimeError(
-        f"{', '.join(_leaked)} must not be set with MEMMACHINE_PLATFORM=1: Platform verifies a "
-        "frontend's signed token, and the signing secret belongs there only (whoever "
-        "holds it can sign a token for any user).")
+        f"{', '.join(_leaked)} must not be set for the hook: Platform verifies a frontend's "
+        "signed token, and the signing secret belongs there only (whoever holds it can "
+        "sign a token for any user).")
 DEFAULT_PROJECT = _setting("MEMMACHINE_PROJECT_ID", "MEMMACHINE_DEFAULT_PROJECT", default="default")
 API_PREFIX = "/" + os.environ.get("MEMMACHINE_API_PREFIX", "/api/v2").strip("/")
 # The stored agent id (producer of answers) of the Open WebUI adapter, and of any
 # client no other adapter claims.
 AGENT_ID = os.environ.get("MEMMACHINE_AGENT_ID", "litellm").strip() or "litellm"
-# Platform mode only: a plain header naming the user ("" = none; a signed token is
-# better, and the colleague's Platform accepts only that).
-USER_HEADER = os.environ.get("MEMMACHINE_USER_HEADER", "x-openwebui-user-email").strip().lower()
 ASSERTION_HEADER = _setting("MEMMACHINE_FORWARDED_USER_JWT_HEADER", "MEMMACHINE_USER_ASSERTION_HEADER",
                             default="x-openwebui-user-jwt").lower()
-# Platform mode: the token claim naming the person (`name` with Corp SSO, where
+# The token claim naming the person (`name` with Corp SSO, where
 # Open WebUI's user name is the employee ID; `email` without).
 ASSERTION_CLAIM = _setting("MEMMACHINE_OWUI_USER_CLAIM", "MEMMACHINE_USER_ASSERTION_CLAIM", default="email")
-# Direct mode: the issuer Open WebUI's token must carry, and the clock margin.
-ASSERTION_ISSUER = os.environ.get("MEMMACHINE_FORWARDED_USER_JWT_ISSUER", "open-webui")
-ASSERTION_LEEWAY = 30
-if FORWARD_USER_INFO_HEADER_JWT_SECRET and not PLATFORM_MODE:
-    try:
-        ASSERTION_LEEWAY = max(0, int(os.environ.get("MEMMACHINE_FORWARDED_USER_JWT_LEEWAY", "30")))
-    except ValueError:
-        raise RuntimeError("MEMMACHINE_FORWARDED_USER_JWT_LEEWAY must be a whole number of seconds") from None
-    try:
-        import jwt
-    except ImportError:
-        raise RuntimeError("FORWARD_USER_INFO_HEADER_JWT_SECRET is set but PyJWT is not importable. "
-                           "Install it (pip install pyjwt), or unset the variable.") from None
-    if not hasattr(jwt, "PyJWTError"):
-        # `jwt` is also an unrelated package on PyPI, with a different decode().
-        raise RuntimeError("The installed `jwt` module is not PyJWT (it has no PyJWTError). Another "
-                           "package of that name is shadowing it; install pyjwt and remove the other.")
-    if len(FORWARD_USER_INFO_HEADER_JWT_SECRET.encode()) < 32:
-        logging.getLogger("memmachine_hook.errors").warning(
-            "FORWARD_USER_INFO_HEADER_JWT_SECRET is shorter than 32 bytes. HS256 with a short secret "
-            "is brute-forcible offline from a single captured token; use at least 32 bytes of random data.")
 MODEL_PREFIX = os.environ.get("MEMMACHINE_MODEL_PREFIX", "memmachine-")
 MODEL_ALLOWLIST = frozenset(
     m.strip() for m in os.environ.get("MEMMACHINE_MODELS", "").split(",") if m.strip()
@@ -340,25 +274,6 @@ SEARCH_TYPES = _parse_types("MEMMACHINE_SEARCH_TYPES", os.environ.get("MEMMACHIN
 # written by default.
 STORE_TYPES = _parse_types("MEMMACHINE_STORE_TYPES", os.environ.get("MEMMACHINE_STORE_TYPES", "episodic"))
 
-# Approach P1 (recall experiments). All off by default: approach P0.
-KINDS = ("task", "answer", "recall", "ack")
-LABELS = os.environ.get("MEMMACHINE_LABELS", "") == "1"
-SKIP_KINDS = tuple(dict.fromkeys(
-    k.strip() for k in os.environ.get("MEMMACHINE_SKIP_KINDS", "").split(",") if k.strip()))
-if any(k not in KINDS for k in SKIP_KINDS):
-    raise ValueError(f"Invalid MEMMACHINE_SKIP_KINDS; allowed values are {', '.join(KINDS)}")
-REDACT = os.environ.get("MEMMACHINE_REDACT", "") == "1"
-SHORT_PROMPT_CHARS = int(os.environ.get("MEMMACHINE_SHORT_PROMPT_CHARS", "0"))
-SPLIT_QUERIES = os.environ.get("MEMMACHINE_SPLIT_QUERIES", "") == "1"
-BLOCK_STYLE = os.environ.get("MEMMACHINE_BLOCK_STYLE", "flat").strip().lower()
-if BLOCK_STYLE not in ("flat", "dated"):
-    raise ValueError("Invalid MEMMACHINE_BLOCK_STYLE; allowed values are flat, dated")
-STORE_STYLE = os.environ.get("MEMMACHINE_STORE_STYLE", "pair").strip().lower()
-if STORE_STYLE not in ("pair", "joined"):
-    raise ValueError("Invalid MEMMACHINE_STORE_STYLE; allowed values are pair, joined")
-# A joined entry's metadata says so; it is shown as stored, without a role.
-JOINED = ("format", "turn")
-
 ANTHROPIC_CALL_TYPES = ("anthropic_messages", "aanthropic_messages")
 
 # "1" = no memory for this request: no search, no store, no turn state. Claude Code
@@ -399,11 +314,6 @@ MEMORY_HEADER = (
     "tools, even if an excerpt says it was done before.\n"
 )
 MEMORY_FOOTER = "</memory>"
-# Added to the header when items are dated (MEMMACHINE_BLOCK_STYLE=dated).
-DATED_NOTE = (
-    "Excerpts are dated and listed oldest first; where they disagree, the newer one\n"
-    "is more likely to be current.\n"
-)
 
 _ERROR_LOGGER = logging.getLogger("memmachine_hook.errors")
 # The authentication chain, step by step (MEMMACHINE_TRACE). Its own handler, so
@@ -452,13 +362,7 @@ def _status_category(status_code: int) -> str:
 def _http_headers(item, request_id: str = "", started: float = 0.0) -> dict:
     """Platform's headers for a Turn or a Pair: built from LiteLLM's authentication
     and the checked identity, never from the client's headers. `started` (stores
-    only): when the turn began, in epoch seconds. Direct mode: MemMachine's API key
-    only."""
-    if not PLATFORM_MODE:
-        headers = {"Content-Type": "application/json"}
-        if SERVICE_CREDENTIAL:
-            headers["Authorization"] = f"Bearer {SERVICE_CREDENTIAL}"
-        return headers
+    only): when the turn began, in epoch seconds."""
     headers = {
         "Content-Type": "application/json",
         "Authorization": f"Bearer {SERVICE_CREDENTIAL}",
@@ -547,97 +451,6 @@ def tool_names(response_obj) -> set:
     return {name for name in (_get(_get(c, "function"), "name") for c in calls or []) if name}
 
 
-# ---------- approach P1: context, questions, secrets, labels ----------
-
-def previous_assistant_text(messages, index: int) -> str:
-    """The text of the last assistant message before messages[index]: what a short
-    prompt ("yes", "2") is answering."""
-    for i in range(index - 1, -1, -1):
-        message = messages[i]
-        if isinstance(message, dict) and message.get("role") == "assistant":
-            text = _content_text(message.get("content")).strip()
-            if text:
-                return text
-    return ""
-
-
-def with_context(prompt: str, before: str, limit: int = 300) -> str:
-    """A short prompt with the end of the message it replies to."""
-    if len(before) > limit:
-        before = "…" + before[-limit:].split(" ", 1)[-1]
-    return f'(replying to: "{before}")\n{prompt}'
-
-
-def split_questions(text: str) -> list:
-    """The questions in a prompt that asks several, else [text]."""
-    parts = [p.strip() for p in re.split(r"(?<=\?)\s+|\n+", text) if p.strip()]
-    questions = [p for p in parts if "?" in p and len(p) >= 15]
-    return questions if len(questions) >= 2 else [text]
-
-
-_SECRETS = [
-    re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----.*?-----END [A-Z ]*PRIVATE KEY-----", re.S),
-    re.compile(r"\b(?:gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,})"),
-    re.compile(r"\bsk-[A-Za-z0-9_-]{16,}"),
-    re.compile(r"\b(?:AKIA|ASIA)[0-9A-Z]{16}\b"),
-    re.compile(r"\bxox[abprs]-[A-Za-z0-9-]{10,}"),
-    re.compile(r"\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}"),
-    re.compile(r"(?i)\bbearer\s+[A-Za-z0-9._~+/=-]{16,}"),
-]
-# NAME=value or NAME: value, where NAME says it is a secret.
-_SECRET_ASSIGNMENT = re.compile(
-    r"(?i)\b([A-Z0-9_]*(?:SECRET|TOKEN|PASSWORD|PASSWD|API_?KEY|ACCESS_?KEY|PRIVATE_?KEY)[A-Z0-9_]*"
-    r"\s*[:=]\s*)([^\s`'\"]{6,})")
-# Long mixed-case strings with digits (generated keys); paths and words rarely have all three.
-_RANDOM_LOOKING = re.compile(r"(?<![\w/.+=-])[A-Za-z0-9+/=_-]{24,}(?![\w/.+=-])")
-REDACTED = "[REDACTED]"
-
-
-def redact(text: str) -> str:
-    """Secrets replaced with [REDACTED]. Pattern-based: catches common token formats,
-    NAME=secret assignments and long random-looking strings, not every secret."""
-    for pattern in _SECRETS:
-        text = pattern.sub(REDACTED, text)
-    text = _SECRET_ASSIGNMENT.sub(lambda m: m.group(1) + REDACTED, text)
-    return _RANDOM_LOOKING.sub(
-        lambda m: REDACTED if (re.search(r"[a-z]", m.group()) and re.search(r"[A-Z]", m.group())
-                               and re.search(r"\d", m.group())) else m.group(), text)
-
-
-ACK_PROMPT_CHARS = 24
-ACK_ANSWER_CHARS = 240
-RECALL_OVERLAP = 0.6
-_WORD = re.compile(r"[a-z0-9][a-z0-9_.-]*[a-z0-9]")
-_STOP = frozenset("the and for our you your that this with from are was were have has not but "
-                  "what which its can will would should into about there their them they".split())
-
-
-def _words(text: str) -> set:
-    return {w for w in _WORD.findall(text.lower()) if len(w) >= 3 and w not in _STOP}
-
-
-def turn_kind(typed: str, answer: str, tool_steps: int, block: Optional[str]) -> str:
-    """task: tools ran. ack: a short prompt with a short answer. recall: a question
-    whose answer is mostly words from the memory block it was given. answer: the rest."""
-    if tool_steps:
-        return "task"
-    if len(typed) <= ACK_PROMPT_CHARS and len(answer) <= ACK_ANSWER_CHARS:
-        return "ack"
-    if block and "?" in typed:
-        words = _words(answer)
-        if len(words) >= 3 and len(words & _words(block)) / len(words) >= RECALL_OVERLAP:
-            return "recall"
-    return "answer"
-
-
-def skip_filter() -> str:
-    """MemMachine's search filter for MEMMACHINE_SKIP_KINDS; unlabelled entries stay in."""
-    if not SKIP_KINDS:
-        return ""
-    kinds = ",".join(f"'{k}'" for k in SKIP_KINDS)
-    return f"metadata.kind IS NULL OR metadata.kind NOT IN ({kinds})"
-
-
 # ---------- identity and project ----------
 
 class NoMemory(Exception):
@@ -664,7 +477,7 @@ def valid_project(name) -> bool:
 class Identity:
     key_id: str      # LiteLLM's hash of the key it authenticated
     owner: str       # that key's owner in LiteLLM ("" if none)
-    named: str       # the user the request names, as sent ("" if none)
+    named: str       # the user the signed token names ("" if none)
     assertion: str   # the frontend's signed token, passed on as is ("" if none)
     person: str      # whose memory: the named user, else the owner
     org: str
@@ -681,25 +494,17 @@ def _claim(token: str, name: str) -> str:
 
 
 def request_identity(user_api_key_dict, headers) -> Identity:
-    """Who the request is for: proposed to Platform (Platform mode), or decided here
-    (direct mode). Raises NoMemory (the message is the log category) if there is
-    no usable person."""
-    if PLATFORM_MODE:
-        return platform_identity(user_api_key_dict, headers)
-    return direct_identity(user_api_key_dict, headers)
-
-
-def platform_identity(user_api_key_dict, headers) -> Identity:
-    """Platform mode: the key, its owner and the user the request names, as seen;
-    Platform decides whether the named user is accepted."""
+    """Who the request is for, as seen: the key, its owner and the user the signed
+    token names; Platform checks the token and decides whether the named user is
+    accepted. Raises NoMemory (the message is the log category) if there is no
+    usable person."""
     key_id = getattr(user_api_key_dict, "token", None)
     if not isinstance(key_id, str) or not key_id:
         raise NoMemory("no_key_id")
     owner = getattr(user_api_key_dict, "user_id", None)
     owner = owner if isinstance(owner, str) else ""
     assertion = _header(headers, ASSERTION_HEADER) if ASSERTION_HEADER else ""
-    named = (_header(headers, USER_HEADER) if USER_HEADER else "") or \
-        (_claim(assertion, ASSERTION_CLAIM) if assertion else "")
+    named = _claim(assertion, ASSERTION_CLAIM) if assertion else ""
     if named:
         person = person_id(named)
         if not person:
@@ -711,50 +516,6 @@ def platform_identity(user_api_key_dict, headers) -> Identity:
         if not person:
             raise NoMemory("no_owner")
     return Identity(key_id, owner, named, assertion, person, org_of(person))
-
-
-def verified_email(token: str) -> str:
-    """Direct mode: the email in Open WebUI's signed token, checked here with its
-    secret (signature, issuer, expiry, an email). Raises NoMemory if it is not good."""
-    try:
-        claims = jwt.decode(token, FORWARD_USER_INFO_HEADER_JWT_SECRET,
-                            algorithms=["HS256"],  # pinned: never alg=none
-                            issuer=ASSERTION_ISSUER, leeway=ASSERTION_LEEWAY,
-                            options={"require": ["exp", "iss", "email"]})
-    except jwt.PyJWTError:
-        raise NoMemory("bad_token") from None
-    email = claims.get("email")
-    if not isinstance(email, str) or not email.strip():
-        raise NoMemory("bad_token")
-    return email.strip()
-
-
-def direct_identity(user_api_key_dict, headers) -> Identity:
-    """Direct mode: the person is the email in Open WebUI's signed token (when the
-    hook holds its secret and the request carries one), else the key owner's email.
-    A token that is present but not good is never downgraded to the key: no memory.
-    The org is the person, or `x-memmachine-org` on a key-identified request; on a
-    token-identified one the namespace is the identity, so a selector header means
-    no memory."""
-    key_id = getattr(user_api_key_dict, "token", None)
-    key_id = key_id if isinstance(key_id, str) else ""
-    owner = getattr(user_api_key_dict, "user_id", None)
-    owner = owner if isinstance(owner, str) else ""
-    token = _header(headers, ASSERTION_HEADER) if FORWARD_USER_INFO_HEADER_JWT_SECRET else ""
-    if token:
-        email = verified_email(token)
-        if _header(headers, "x-memmachine-org") or _header(headers, H_PROJECT):
-            raise NoMemory("selector_with_token")
-    else:
-        email = getattr(user_api_key_dict, "user_email", None)
-        if not isinstance(email, str) or not email.strip():
-            raise NoMemory("no_email")
-        email = email.strip()
-    person = org_of(email)
-    if not person:
-        raise NoMemory("no_email")
-    org = (_header(headers, "x-memmachine-org") if not token else "") or person
-    return Identity(key_id, owner, "", "", person, org)
 
 
 def requested_project(headers) -> str:
@@ -770,8 +531,7 @@ def _escape(text: str) -> str:
 
 
 def _episodic_items(episodic) -> list:
-    """Items in rank order: {"text", "role", "date", "pid"} (role, date and the
-    prompt id when MemMachine returns them)."""
+    """Items in rank order: {"text", "role"} (the role when MemMachine returns it)."""
     out = []
     if not isinstance(episodic, dict):
         return out
@@ -781,10 +541,7 @@ def _episodic_items(episodic) -> list:
             continue
         for ep in term.get("episodes") or []:
             if isinstance(ep, dict) and ep.get("content"):
-                meta = ep.get("metadata") if isinstance(ep.get("metadata"), dict) else {}
-                joined = meta.get(JOINED[0]) == JOINED[1]
-                out.append({"text": str(ep["content"]), "role": "turn" if joined else ep.get("producer_role"),
-                            "date": str(ep.get("created_at") or ""), "pid": meta.get("prompt_id")})
+                out.append({"text": str(ep["content"]), "role": ep.get("producer_role")})
         for summary in term.get("episode_summary") or []:
             if isinstance(summary, str) and summary.strip():
                 out.append({"text": summary})
@@ -795,12 +552,10 @@ def _item(item) -> dict:
     return item if isinstance(item, dict) else {"text": str(item)}
 
 
-def _cut(text: str, role=None) -> str:
-    """At most MEMMACHINE_ITEM_MAX_CHARS; twice that for a joined turn, which holds a
-    prompt and an answer."""
-    limit = ITEM_MAX_CHARS * (2 if role == "turn" else 1)
+def _cut(text: str) -> str:
+    """At most MEMMACHINE_ITEM_MAX_CHARS."""
     text = text.strip()
-    return text[:limit].rstrip() + "…" if len(text) > limit else text
+    return text[:ITEM_MAX_CHARS].rstrip() + "…" if len(text) > ITEM_MAX_CHARS else text
 
 
 def _semantic_items(semantic) -> list:
@@ -818,8 +573,6 @@ def _semantic_items(semantic) -> list:
 def build_block(items: list) -> Optional[str]:
     """The <memory> block, filled in rank order until the next item would pass
     MEMMACHINE_INJECT_MAX_TOKENS. None when nothing fits or nothing was found."""
-    if BLOCK_STYLE == "dated":
-        return _build_dated_block([_item(i) for i in items])
     budget = INJECT_MAX_TOKENS * CHARS_PER_TOKEN - len(MEMORY_HEADER) - len(MEMORY_FOOTER)
     seen = set()
     lines = []
@@ -831,7 +584,7 @@ def build_block(items: list) -> Optional[str]:
         if not text or text in seen:
             continue
         seen.add(text)
-        line = "- " + _escape(_cut(text, role)).replace("\n", "\n  ") + "\n"
+        line = "- " + _escape(_cut(text)).replace("\n", "\n  ") + "\n"
         if used + len(line) > budget:
             break
         lines.append(line)
@@ -839,39 +592,6 @@ def build_block(items: list) -> Optional[str]:
     if not lines:
         return None
     return MEMORY_HEADER + "".join(lines) + MEMORY_FOOTER
-
-
-def _build_dated_block(items: list) -> Optional[str]:
-    """Items grouped by prompt (a question with its answer), groups chosen in rank
-    order of their best item until the budget is spent, then listed oldest first."""
-    budget = (INJECT_MAX_TOKENS * CHARS_PER_TOKEN - len(MEMORY_HEADER) - len(DATED_NOTE)
-              - len(MEMORY_FOOTER))
-    groups = OrderedDict()
-    seen = set()
-    for n, item in enumerate(items):
-        text = item["text"].strip()
-        if not text or (item.get("role"), text) in seen:
-            continue
-        seen.add((item.get("role"), text))
-        groups.setdefault(item.get("pid") or f"#{n}", []).append(item)
-    chosen = []
-    used = 0
-    for group in groups.values():
-        group.sort(key=lambda i: (i.get("role") != "user", i.get("date") or ""))
-        date = min((i.get("date") or "" for i in group), default="")
-        head = f"- {date[:16].replace('T', ' ')}\n" if date else "-\n"
-        body = "".join(
-            "  " + (f"{i['role']}: " if i.get("role") in ("user", "assistant") else "")
-            + _escape(_cut(i["text"], i.get("role"))).replace("\n", "\n  " if i.get("role") == "turn" else "\n    ")
-            + "\n" for i in group)
-        if used + len(head) + len(body) > budget:
-            break
-        chosen.append((date, head + body))
-        used += len(head) + len(body)
-    if not chosen:
-        return None
-    chosen.sort(key=lambda c: c[0])
-    return MEMORY_HEADER + DATED_NOTE + "".join(text for _, text in chosen) + MEMORY_FOOTER
 
 
 # ---------- per-session state ----------
@@ -885,8 +605,6 @@ class Pair:
     prompt_id: str
     prompt: str
     answer: str
-    kind: str = ""          # MEMMACHINE_LABELS
-    tool_steps: int = 0
     key_id: str = ""        # the key's hash: Platform's key id
     request_id: str = ""    # LiteLLM's id of the request that ended the turn
     owner: str = ""         # the key's owner in LiteLLM
@@ -907,16 +625,10 @@ class Pair:
             "session_id": self.session_id,
             "prompt_id": self.prompt_id,
         }
-        if self.kind:
-            meta.update(kind=self.kind, tool_steps=str(self.tool_steps))
-        body = {"org_id": self.org_id, "project_id": self.project_id, "types": STORE_TYPES}
-        if STORE_STYLE == "joined":
-            meta[JOINED[0]] = JOINED[1]
-            return {**body, "messages": [
-                {"content": f"user: {self.prompt}\n\nassistant: {self.answer}", "producer": self.user,
-                 "produced_for": agent, "role": "user", "metadata": meta}]}
         return {
-            **body,
+            "org_id": self.org_id,
+            "project_id": self.project_id,
+            "types": STORE_TYPES,
             "messages": [
                 {"content": self.prompt, "producer": self.user, "produced_for": agent,
                  "role": "user", "metadata": meta},
@@ -957,8 +669,6 @@ class Turn:
     agents: set = field(default_factory=set)       # subagents started in this turn
     spawned: bool = False                          # the turn called a subagent tool
     answer: Optional[str] = None                   # latest final answer
-    typed: str = ""                                # the prompt as typed (prompt may add context)
-    tool_steps: int = 0                            # replies with tool calls
     in_flight: int = 0                             # requests waiting on the model
     answer_request: str = ""                       # LiteLLM's id of the latest answer
     owner: str = ""                                # the key's owner in LiteLLM
@@ -975,23 +685,11 @@ class Turn:
         quiet = now - self.last_seen
         return quiet > SESSION_IDLE and (self.in_flight == 0 or quiet > SESSION_IDLE + REQUEST_MAX)
 
-    def block(self) -> Optional[str]:
-        """The turn's memory block, if its search has finished."""
-        s = self.search
-        if s is None or not s.done() or s.cancelled() or s.exception() is not None:
-            return None
-        return s.result()
-
     def pair(self) -> Optional[Pair]:
         if not self.answer:
             return None
-        prompt, answer = self.prompt, self.answer
-        if REDACT:
-            prompt, answer = redact(prompt), redact(answer)
-        kind = turn_kind(self.typed or self.prompt, self.answer, self.tool_steps, self.block()) if LABELS else ""
         return Pair(self.user, self.org_id, self.project_id, self.session_id,
-                    self.prompt_id, prompt, answer, kind, self.tool_steps,
-                    self.key_id, self.answer_request, self.owner, self.named, self.assertion,
+                    self.prompt_id, self.prompt, self.answer, self.key_id, self.answer_request, self.owner, self.named, self.assertion,
                     self.client, self.started, self.style)
 
 
@@ -1160,17 +858,12 @@ class MemMachineHook(CustomLogger):
         if self.clock() < self._breaker_until:
             _log("search skipped: breaker open")
             return None
-        query = redact(turn.prompt) if REDACT else turn.prompt
-        queries = split_questions(query) if SPLIT_QUERIES else [query]
-        # Several questions share the results: each gets a smaller top_k, at least 4.
-        top_k = TOP_K if len(queries) == 1 else max(4, TOP_K // len(queries))
         started = time.monotonic()
         try:
-            bodies = await asyncio.wait_for(
-                asyncio.gather(*(self._post_search(turn, q, top_k, request_id) for q in queries)),
-                timeout=SEARCH_TIMEOUT)
-            contents = [b.get("content") if isinstance(b, dict) else None for b in bodies]
-            if not all(isinstance(c, dict) for c in contents):
+            body = await asyncio.wait_for(self._post_search(turn, turn.prompt, request_id),
+                                          timeout=SEARCH_TIMEOUT)
+            content = body.get("content") if isinstance(body, dict) else None
+            if not isinstance(content, dict):
                 raise ValueError("MemMachine search response has no content object")
         except Exception as exc:
             _trace("search", request=request_id, user=turn.user, project=turn.project_id,
@@ -1181,20 +874,15 @@ class MemMachineHook(CustomLogger):
             self._search_failed(exc, ids, turn)
             return None
         self._failures = 0
-        per_query = [_semantic_items(c.get("semantic_memory")) + _episodic_items(c.get("episodic_memory"))
-                     for c in contents]
-        # Interleave by rank, so each question's best results come first.
-        items = [i for rank in zip_longest(*per_query) for i in rank if i is not None]
-        _log(f"search ok: project={turn.project_id!r} queries={len(queries)} items={len(items)}")
+        items = _semantic_items(content.get("semantic_memory")) + _episodic_items(content.get("episodic_memory"))
+        _log(f"search ok: project={turn.project_id!r} items={len(items)}")
         _trace("search", request=request_id, user=turn.user, project=turn.project_id, status=200,
                items=len(items), ms=round((time.monotonic() - started) * 1000))
         return (turn.build or build_block)(items)
 
-    async def _post_search(self, turn: Turn, query: str, top_k: int, request_id: str = ""):
+    async def _post_search(self, turn: Turn, query: str, request_id: str = ""):
         body = {"org_id": turn.org_id, "project_id": turn.project_id, "query": query,
-                "top_k": top_k, "types": SEARCH_TYPES}
-        if SKIP_KINDS:
-            body["filter"] = skip_filter()
+                "top_k": TOP_K, "types": SEARCH_TYPES}
         async with httpx.AsyncClient(transport=self.transport, timeout=SEARCH_TIMEOUT) as client:
             resp = await client.post(f"{BASE_URL}{API_PREFIX}/memories/search", json=body,
                                      headers=_http_headers(turn, request_id or ""))
@@ -1434,7 +1122,7 @@ async def replay_dead_letter(path: Path, transport=None) -> tuple:
         for line in lines:
             try:
                 record = json.loads(line)
-                # Fields added later (kind, tool_steps) have defaults.
+                # Fields added later have defaults; fields since removed are ignored.
                 pair = Pair(**{k: record[k] for k in fields if k in record})
                 # The original start: a frontend's token is judged then, so one
                 # that has expired since is refused (401) and dropped below.

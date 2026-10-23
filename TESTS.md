@@ -6,7 +6,7 @@ Test files, in increasing scope:
 
 | File | Scope | Requires |
 |------|-------|----------|
-| `test_hook.py` | unit: the hook's core and both adapters (Claude Code, Open WebUI), platform and direct mode, identity, refusals, retries, dead letters, replay | `httpx`, `pyjwt`, `pytest`; no network |
+| `test_hook.py` | unit: the hook's core and both adapters (Claude Code, Open WebUI), identity, refusals, retries, dead letters, replay | `httpx`, `pytest`; no network |
 | `test_platform.py` | unit: the mock platform's authorize() rules and request rewriting | `uv run --group platform`; no network |
 | `test_linking.py` | unit: keys looked up in LiteLLM and linked on their first call; the miss cache; reconcile | `uv run --group platform`; no network |
 | `test_portal.py` | unit: the portal (password sign-in via Open WebUI, own-namespace-only, switch, enroll) | `uv run --group platform`; no network |
@@ -21,8 +21,7 @@ Test files, in increasing scope:
 ## `test_hook.py` — unit (pytest)
 
 The platform (and MemMachine) is an `httpx.MockTransport`; nothing is called over
-the network. The tests run in platform mode (the file sets `MEMMACHINE_PLATFORM=1`);
-`TestDirectMode` switches to direct mode per test. Claude Code's tests replay
+the network. Claude Code's tests replay
 real Claude Code traffic from `fixtures/`. A few tests start a fresh Python to
 check how the hook loads (as LiteLLM loads it, and the signing-secret guard).
 
