@@ -21,6 +21,10 @@ and the body carries org_id and project_id, which must be the person's.
 Rules, in order. Each refusal names the step that failed.
 
 1. The service credential must be registered.                       401
+   With mutual TLS required, the request must also have come over it, with
+   a client certificate (signed by the platform's CA; serve.py checks that)
+   whose common name is that credential's service label: a credential
+   copied off a LiteLLM is no use without that LiteLLM's key.         401
 2. A key id must be present.                                        401
 3. An unknown key is a person who has not been enrolled (the app has
    already asked LiteLLM about it, see linking.py); a key reconcile
@@ -84,6 +88,9 @@ PROJECT_NOT_GRANTED = "project-not-granted"
 # The one refusal the app may answer by enrolling the person (see enrol.py):
 # the token verified, its email is just not in the registry.
 TOKEN_USER_UNKNOWN = "token user not registered"
+# Where serve.py's mutual-TLS listener puts the verified client certificate's
+# common name in the ASGI scope. Absent on the plain listener.
+CLIENT_CERT_SCOPE = "mock_platform.client_cert_name"
 
 # Clock difference allowed between Open WebUI, which stamps the token, and here.
 LEEWAY_SECONDS = 30
@@ -121,8 +128,11 @@ class Principal:
 
 
 def authorize(registry: Registry, headers, now: Optional[float] = None,
-              body: Optional[dict] = None) -> Principal:
-    """Who the request is for. With `body`, also check the namespace it names."""
+              body: Optional[dict] = None, *, mtls: bool = False,
+              client_cert_name: Optional[str] = None) -> Principal:
+    """Who the request is for. With `body`, also check the namespace it names.
+    With `mtls`, the caller's client certificate (`client_cert_name`, its common
+    name; None without one) must be the credential's service."""
     now = time.time() if now is None else now
 
     # 1. Which LiteLLM is calling.
@@ -131,6 +141,9 @@ def authorize(registry: Registry, headers, now: Optional[float] = None,
     service = registry.service_label(credential.strip()) if scheme.lower() == "bearer" else None
     if not service:
         raise Denied(401, "unknown service credential")
+    if mtls and client_cert_name != service:
+        raise Denied(401, f"client certificate {client_cert_name[:64]!r} is not this credential's service"
+                     if client_cert_name else "no client certificate", service=service)
 
     # 2. Which LiteLLM key the request came in on.
     key_hash = (headers.get(KEY_ID_HEADER) or "").strip().lower()

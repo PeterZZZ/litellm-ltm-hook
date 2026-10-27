@@ -20,6 +20,10 @@ PLATFORM_SERVICE_CREDENTIAL is the credential the platform issued to this
 LiteLLM (the hook's MEMMACHINE_API_KEY); the checks that need a header the hook
 would never send (a wrong key owner, a project that disagrees with the body, a
 path the hook does not call) speak to the platform directly as that LiteLLM.
+With the platform's mutual TLS on (SETUP.md step 9a), they need that LiteLLM's
+certificate too: PLATFORM_API_URL=https://127.0.0.1:8443 and PLATFORM_CA_CERT,
+PLATFORM_CLIENT_CERT, PLATFORM_CLIENT_KEY (the hook's MEMMACHINE_* files); the
+portal stays on PLATFORM_URL.
 LITELLM_MASTER_KEY creates, blocks, reassigns and deletes the throwaway keys the
 key-linking checks need; everything it creates is named after the run and
 deleted at the end. Expected: alice (E12345) and bob (E67890) enrolled; carol (E24680) has a
@@ -30,6 +34,7 @@ WebUI users by the token's name claim, which SSO sets to the employee ID.
 import hashlib
 import json
 import os
+import ssl
 import sys
 import time
 import urllib.error
@@ -47,6 +52,12 @@ PLATFORM = os.environ["PLATFORM_URL"].rstrip("/")
 MODEL = os.environ.get("E2E_MODEL", "memmachine-glm-5.2")
 SECRET = os.environ["OWUI_JWT_SECRET"]
 SERVICE = os.environ["PLATFORM_SERVICE_CREDENTIAL"]
+# The memory API: the portal's URL, or with mutual TLS the platform's TLS port.
+API = (os.environ.get("PLATFORM_API_URL") or PLATFORM).rstrip("/")
+TLS = None
+if os.environ.get("PLATFORM_CLIENT_CERT"):
+    TLS = ssl.create_default_context(cafile=os.environ.get("PLATFORM_CA_CERT") or None)
+    TLS.load_cert_chain(os.environ["PLATFORM_CLIENT_CERT"], os.environ["PLATFORM_CLIENT_KEY"])
 MASTER = os.environ["LITELLM_MASTER_KEY"]
 
 keys = dict(line.strip().split("=", 1) for line in open(os.environ["KEYS_FILE"])
@@ -64,13 +75,13 @@ EMPLOYEE = {"alice@corp.example": "E12345", "bob@corp.example": "E67890",
 results = []
 
 
-def post(url, body, token, headers=None):
+def post(url, body, token, headers=None, context=None):
     req = urllib.request.Request(
         url, data=json.dumps(body).encode(),
         headers={"Content-Type": "application/json", "Authorization": f"Bearer {token}", **(headers or {})},
     )
     try:
-        with urllib.request.urlopen(req, timeout=300) as r:
+        with urllib.request.urlopen(req, timeout=300, context=context) as r:
             return r.status, json.load(r)
     except urllib.error.HTTPError as e:
         return e.code, e.read().decode()[:160]
@@ -90,10 +101,10 @@ def platform(path, body, key, *, method="POST", owner=None, user=None, token=Non
                         ("X-MemMachine-User-Assertion", token), ("X-MemMachine-Project", project)):
         if value is not None:
             h[name] = value
-    req = urllib.request.Request(f"{PLATFORM}{path}", method=method, headers=h,
+    req = urllib.request.Request(f"{API}{path}", method=method, headers=h,
                                  data=json.dumps(body).encode() if body is not None else None)
     try:
-        with urllib.request.urlopen(req, timeout=120) as r:
+        with urllib.request.urlopen(req, timeout=120, context=TLS) as r:
             return r.status, r.headers.get("X-MemMachine-Decision"), r.read().decode()
     except urllib.error.HTTPError as e:
         return e.code, e.headers.get("X-MemMachine-Decision"), e.read().decode()[:200]
@@ -229,8 +240,12 @@ check("alice's valid token replayed on bob's key: chat works, no memory", s == 2
 s, a = chat(LL, keys["ALICE_VIRTUAL_KEY"], QUESTION, {"x-memmachine-org": "E67890"})
 check("alice's key + x-memmachine-org: E67890 (bob) -> header ignored, still alice", s == 200 and FACT in a, a)
 
-s, a = post(f"{PLATFORM}/api/v2/memories/search", {"query": "pager"}, "mm-svc-guess")
+s, a = post(f"{API}/api/v2/memories/search", {"query": "pager"}, "mm-svc-guess", context=TLS)
 check("platform called directly with a guessed service credential: 401", s == 401, str(a))
+if API != PLATFORM:
+    s, a = post(f"{PLATFORM}/api/v2/memories/search", {"query": "pager"}, SERVICE)
+    check("mutual TLS: the real credential without its certificate (plain listener): 401",
+          s == 401 and "no client certificate" in str(a), str(a))
 
 # Alice edits her Open WebUI display name to Bob's employee ID. Open WebUI signs
 # whatever name she has, so the token is valid; the platform knows E67890 is not

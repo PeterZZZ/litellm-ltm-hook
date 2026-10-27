@@ -290,6 +290,55 @@ sudo systemctl restart ltmplat-litellm     # picks up MEMMACHINE_API_KEY
 curl -s http://127.0.0.1:8100/portal/api/config   # {"sso":true,...}
 ```
 
+### 9a. Mutual TLS between LiteLLM and the platform (optional)
+
+Without it, the service credential alone identifies LiteLLM. With it, LiteLLM
+also has to present the certificate issued to its service label, so a copied
+credential is useless without that LiteLLM's key. The portal stays on plain
+:8100; the memory API moves to :8443.
+
+The platform side runs the CA and issues its own certificate:
+
+```bash
+C="$ENV_DIR/platform/.venv/bin/python -m mock_platform.certs --dir $ENV_DIR/pki"
+$C ca                                   # ca.crt, ca.key: ca.key never leaves here
+$C server 127.0.0.1                     # platform.crt/.key: the address LiteLLM dials
+```
+
+LiteLLM's side makes its own key and a signing request named after its service
+label (the one from `service add` above); only the request goes to the CA:
+
+```bash
+mkdir -p $ENV_DIR/litellm/tls && cd $ENV_DIR/litellm/tls && umask 077
+openssl req -new -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes \
+  -keyout litellm-ltm-platform-env.key -out litellm-ltm-platform-env.csr \
+  -subj "/CN=litellm-ltm-platform-env"
+cd -
+```
+
+The CA signs it only if that name is a service in the registry, and the
+certificate (public, like `ca.crt`) goes back to LiteLLM:
+
+```bash
+$C sign $ENV_DIR/litellm/tls/litellm-ltm-platform-env.csr --db $ENV_DIR/platform/registry.sqlite
+cp $ENV_DIR/pki/ca.crt $ENV_DIR/litellm/tls/
+```
+
+On one host these are only different directories; with LiteLLM elsewhere, the
+`.csr` travels to the CA and the `.crt` files travel back, and the `.key` stays.
+
+Uncomment the mutual-TLS lines in `platform.env` and `litellm.env` (the
+`MEMMACHINE_BASE_URL` there replaces the http one), then:
+
+```bash
+sudo systemctl restart ltmplat-platform ltmplat-litellm
+curl -s --cacert $ENV_DIR/pki/ca.crt https://127.0.0.1:8443/healthz \
+  || echo "refused without a client certificate: as intended"
+T=$ENV_DIR/litellm/tls
+curl -s --cacert $T/ca.crt --cert $T/litellm-ltm-platform-env.crt \
+  --key $T/litellm-ltm-platform-env.key https://127.0.0.1:8443/healthz   # {"ok":true}
+```
+
 ## 10. Open WebUI
 
 ```bash
@@ -407,5 +456,6 @@ LiteLLM's own dashboard is at `http://127.0.0.1:4011/ui` (user `admin`, password
 - **SSO on LiteLLM's dashboard** (developers creating their own keys). LiteLLM's
   free tier refuses it beyond 5 users, and it counts every LiteLLM user row,
   service users included. Keys here are created through the API in step 8.
-- A real secret store, TLS, or network rules that make core reachable only
+- A real secret store, a real CA (step 9a's is a key on disk), TLS between the
+  platform and core, or network rules that make core reachable only
   from the platform.

@@ -21,6 +21,10 @@ not 404, so a caller cannot tell a hidden endpoint from a forbidden one.
     MOCK_PLATFORM_DB=/path/registry.sqlite \
     MOCK_PLATFORM_CORE_URL=http://127.0.0.1:8090 \
     uvicorn mock_platform.app:app --port 8100
+
+With MOCK_PLATFORM_MTLS_PORT, the API answers only LiteLLMs that present their
+client certificate (authorize.py, rule 1): run it with `python -m
+mock_platform.serve`, which adds that listener (serve.py).
 """
 from __future__ import annotations
 
@@ -34,9 +38,9 @@ import httpx
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, Response
 
-from .authorize import (DECISION_HEADER, ENDPOINT_NOT_ALLOWED, KEY_ID_HEADER, KEY_OWNER_HEADER,
-                        NOT_ENROLLED, REQUEST_ID_HEADER, TOKEN_USER_UNKNOWN, Denied, Principal,
-                        authorize)
+from .authorize import (CLIENT_CERT_SCOPE, DECISION_HEADER, ENDPOINT_NOT_ALLOWED, KEY_ID_HEADER,
+                        KEY_OWNER_HEADER, NOT_ENROLLED, REQUEST_ID_HEADER, TOKEN_USER_UNKNOWN, Denied,
+                        Principal, authorize)
 from .enrol import Enroller
 from .linking import RECONCILE_SECONDS, KeyLinker
 from .registry import Registry
@@ -60,6 +64,7 @@ def create_app(
     reconcile_seconds: float = RECONCILE_SECONDS,
     auto_enrol: bool = True,
     enroller: Optional[Enroller] = None,
+    mtls: bool = False,
 ) -> FastAPI:
     """The platform API; with `owui_url` or `sso`, also the portal at /portal/.
 
@@ -68,6 +73,8 @@ def create_app(
     reconciles its keys with LiteLLM every `reconcile_seconds` (0: never).
     With `sso` and `auto_enrol`, a person Corp SSO knows is enrolled on their
     first call instead of being refused as not-enrolled (enrol.py).
+    With `mtls`, the API refuses a call without the calling LiteLLM's client
+    certificate (serve.py's mutual-TLS listener checks it and names it).
     """
     core_url = core_url.rstrip("/")
     known_projects: set[tuple[str, str]] = set()
@@ -99,14 +106,15 @@ def create_app(
     async def decide(request: Request, op: str, body: dict) -> Principal:
         request_id = (request.headers.get(REQUEST_ID_HEADER) or "")[:80]
         key_hash = (request.headers.get(KEY_ID_HEADER) or "").strip().lower()
-        if key_hash and registry.key(key_hash) is None and registry.service_label(
-                _bearer(request.headers.get("authorization"))):
+        cert = request.scope.get(CLIENT_CERT_SCOPE)
+        service = registry.service_label(_bearer(request.headers.get("authorization")))
+        if key_hash and registry.key(key_hash) is None and service and (not mtls or cert == service):
             # A key the platform has never seen, vouched for by a known LiteLLM:
             # ask that LiteLLM whose it is before deciding.
             await linker.link_unknown(key_hash, (request.headers.get(KEY_OWNER_HEADER) or "").strip())
         try:
             try:
-                principal = authorize(registry, request.headers, body=body)
+                principal = authorize(registry, request.headers, body=body, mtls=mtls, client_cert_name=cert)
             except Denied as first:
                 # A verified token naming someone the registry does not know:
                 # enrol them if Corp SSO knows them, then decide again.
@@ -116,7 +124,7 @@ def create_app(
                     raise
                 if await enroller.by_email(email, "openwebui") is None:
                     raise
-                principal = authorize(registry, request.headers, body=body)
+                principal = authorize(registry, request.headers, body=body, mtls=mtls, client_cert_name=cert)
         except Denied as exc:
             log.info("op=%s decision=%s status=%s reason=%r namespace=%s request=%s",
                      op, exc.decision, exc.status, exc.reason,
@@ -290,6 +298,8 @@ def _from_env() -> FastAPI:
         reconcile_seconds=float(os.environ.get("MOCK_PLATFORM_RECONCILE_SECONDS", RECONCILE_SECONDS)),
         # People Corp SSO knows enrol themselves on first use (Leo, Oct 22).
         auto_enrol=os.environ.get("MOCK_PLATFORM_AUTO_ENROL", "1").strip() != "0",
+        # The API is then for LiteLLMs with their client certificate only.
+        mtls=bool(os.environ.get("MOCK_PLATFORM_MTLS_PORT", "").strip()),
     )
 
 

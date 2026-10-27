@@ -45,8 +45,9 @@ is and Platform decides. In short:
     Claude Code, ANTHROPIC_CUSTOM_HEADERS in the repo's .claude/settings.json);
     without it, MEMMACHINE_PROJECT_ID. Whether the user may use it is
     Platform's decision, not the hook's.
-  - Platform only authenticates and authorizes, then forwards the request. Each
-    call carries:
+  - Platform only authenticates and authorizes, then forwards the request. With
+    mutual TLS (MEMMACHINE_CLIENT_CERT), the connection itself also proves which
+    LiteLLM is calling. Each call carries:
       Authorization: Bearer <LiteLLM service credential>   (one per deployment)
       X-MemMachine-Key-Id: <hash of the key LiteLLM authenticated>
       X-MemMachine-Key-Owner: <that key's owner, LiteLLM user_id>
@@ -74,6 +75,14 @@ Environment variables (a .env next to this file is read too; real env wins). In
   MEMMACHINE_BASE_URL            REQUIRED: the Platform
   MEMMACHINE_API_KEY [MEMMACHINE_SERVICE_CREDENTIAL]
                                  REQUIRED: this LiteLLM's service credential
+  MEMMACHINE_CA_CERT             Platform's CA (PEM): Platform's certificate is checked
+                                 against it instead of the system's CAs
+  MEMMACHINE_CLIENT_CERT, MEMMACHINE_CLIENT_KEY
+                                 this LiteLLM's certificate and key (PEM), for a Platform
+                                 that requires mutual TLS. The certificate names this
+                                 deployment, and Platform accepts it only with the
+                                 service credential issued to that name. Both or neither;
+                                 any of the three needs an https:// MEMMACHINE_BASE_URL
   FORWARD_USER_INFO_HEADER_JWT_SECRET  Open WebUI's signing secret: must NOT be set
                                  here (nor OPENWEBUI_USER_JWT_SECRET,
                                  PLATFORM_FRONTEND_SECRET_*). It belongs to Open
@@ -138,13 +147,14 @@ import json
 import logging
 import os
 import re
+import ssl
 import sys
 import time
 import types
 from collections import OrderedDict
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable, Optional
+from typing import Callable, Optional, Union
 
 import httpx
 from litellm.integrations.custom_logger import CustomLogger
@@ -199,6 +209,33 @@ SERVICE_CREDENTIAL = _setting("MEMMACHINE_API_KEY", "MEMMACHINE_SERVICE_CREDENTI
 if not SERVICE_CREDENTIAL:
     raise RuntimeError("MEMMACHINE_API_KEY is required: the service credential the platform "
                        "issued to this LiteLLM.")
+
+
+def platform_tls(ca_cert: str = "", client_cert: str = "", client_key: str = "") -> Union[ssl.SSLContext, bool]:
+    """httpx's `verify` for Platform: the system's CAs (True) when nothing is set,
+    else a context that checks Platform against `ca_cert` and, for mutual TLS,
+    presents this LiteLLM's certificate."""
+    if bool(client_cert) != bool(client_key):
+        raise RuntimeError("MEMMACHINE_CLIENT_CERT and MEMMACHINE_CLIENT_KEY go together: set both or neither.")
+    if not (ca_cert or client_cert):
+        return True
+    context = ssl.create_default_context(cafile=ca_cert or None)
+    context.minimum_version = ssl.TLSVersion.TLSv1_2
+    if client_cert:
+        context.load_cert_chain(certfile=client_cert, keyfile=client_key)
+    return context
+
+
+_TLS_FILES = [_setting(n) for n in ("MEMMACHINE_CA_CERT", "MEMMACHINE_CLIENT_CERT", "MEMMACHINE_CLIENT_KEY")]
+if any(_TLS_FILES) and not BASE_URL.startswith("https://"):
+    raise RuntimeError("MEMMACHINE_CA_CERT / MEMMACHINE_CLIENT_CERT need an https:// MEMMACHINE_BASE_URL.")
+# Loaded once: a missing or unreadable file stops the gateway here, not on the first prompt.
+try:
+    PLATFORM_TLS = platform_tls(*_TLS_FILES)
+except (OSError, ssl.SSLError) as exc:
+    raise RuntimeError(f"Platform TLS files {', '.join(f for f in _TLS_FILES if f)} cannot be loaded: "
+                       f"{exc.strerror or exc}") from None
+
 # A frontend's signing secret belongs to the frontend and Platform only: its tokens
 # are HS256, so whoever can verify one can also mint one, for any user, and the
 # gateway refuses to start with one in its environment. Open WebUI's is
@@ -883,7 +920,8 @@ class MemMachineHook(CustomLogger):
     async def _post_search(self, turn: Turn, query: str, request_id: str = ""):
         body = {"org_id": turn.org_id, "project_id": turn.project_id, "query": query,
                 "top_k": TOP_K, "types": SEARCH_TYPES}
-        async with httpx.AsyncClient(transport=self.transport, timeout=SEARCH_TIMEOUT) as client:
+        async with httpx.AsyncClient(transport=self.transport, timeout=SEARCH_TIMEOUT,
+                                     verify=PLATFORM_TLS) as client:
             resp = await client.post(f"{BASE_URL}{API_PREFIX}/memories/search", json=body,
                                      headers=_http_headers(turn, request_id or ""))
             resp.raise_for_status()
@@ -968,7 +1006,8 @@ class MemMachineHook(CustomLogger):
         reason = "unexpected"
         for attempt in range(STORE_RETRIES + 1):
             try:
-                async with httpx.AsyncClient(transport=self.transport, timeout=STORE_TIMEOUT) as client:
+                async with httpx.AsyncClient(transport=self.transport, timeout=STORE_TIMEOUT,
+                                             verify=PLATFORM_TLS) as client:
                     resp = await client.post(f"{BASE_URL}{API_PREFIX}/memories", json=pair.payload(),
                                              headers=_http_headers(pair, pair.request_id, pair.started))
                     resp.raise_for_status()
@@ -1118,7 +1157,7 @@ async def replay_dead_letter(path: Path, transport=None) -> tuple:
     remaining = []
     stored = dropped = 0
     fields = Pair.__dataclass_fields__
-    async with httpx.AsyncClient(transport=transport, timeout=STORE_TIMEOUT) as client:
+    async with httpx.AsyncClient(transport=transport, timeout=STORE_TIMEOUT, verify=PLATFORM_TLS) as client:
         for line in lines:
             try:
                 record = json.loads(line)
