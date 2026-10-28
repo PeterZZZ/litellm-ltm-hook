@@ -417,7 +417,8 @@ PLATFORM_SERVICE_CREDENTIAL="$MEMMACHINE_API_KEY" LITELLM_MASTER_KEY="$LITELLM_M
   uv run --group platform python3 tools/platform_e2e.py
 ```
 
-Expect `48/48 passed` (`49/49` with step 9a's mutual TLS and its `PLATFORM_API_URL` / `PLATFORM_CA_CERT` / `PLATFORM_CLIENT_CERT` / `PLATFORM_CLIENT_KEY` set) (identity, the Platform API itself, grants, key linking
+Expect `48/48 passed`, or `49/49` with step 9a's mutual TLS (add `PLATFORM_API_URL`
+and the `PLATFORM_*_CERT` / `_KEY` files, see the script's docstring) (identity, the Platform API itself, grants, key linking
 and reconcile; the script makes and removes a few throwaway LiteLLM keys with
 the master key). Unit tests, no network:
 
