@@ -290,6 +290,62 @@ sudo systemctl restart ltmplat-litellm     # picks up MEMMACHINE_API_KEY
 curl -s http://127.0.0.1:8100/portal/api/config   # {"sso":true,...}
 ```
 
+### 9a. Mutual TLS between LiteLLM and the platform (optional)
+
+Without it, the service credential alone identifies LiteLLM. With it, LiteLLM
+also has to present the certificate issued to its service label, so a copied
+credential is useless without that LiteLLM's key. The portal stays on plain
+:8100; the memory API moves to :8443.
+
+The platform side runs the CA and issues its own certificate:
+
+```bash
+C="$ENV_DIR/platform/.venv/bin/python -m mock_platform.certs --dir $ENV_DIR/pki"
+$C ca                                   # ca.crt, ca.key: ca.key never leaves here
+$C server 127.0.0.1                     # platform.crt/.key: the address LiteLLM dials
+```
+
+LiteLLM's side makes its own key and a signing request named after its service
+label (the one from `service add` above); only the request goes to the CA:
+
+```bash
+mkdir -p $ENV_DIR/litellm/tls && cd $ENV_DIR/litellm/tls && umask 077
+openssl req -new -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes \
+  -keyout litellm-ltm-platform-env.key -out litellm-ltm-platform-env.csr \
+  -subj "/CN=litellm-ltm-platform-env"
+cd -
+```
+
+The CA signs it only if that name is a service in the registry, and the
+certificate (public, like `ca.crt`) goes back to LiteLLM:
+
+```bash
+$C sign $ENV_DIR/litellm/tls/litellm-ltm-platform-env.csr --db $ENV_DIR/platform/registry.sqlite
+cp $ENV_DIR/pki/ca.crt $ENV_DIR/litellm/tls/
+```
+
+On one host these are only different directories; with LiteLLM elsewhere, the
+`.csr` travels to the CA and the `.crt` files travel back, and the `.key` stays.
+
+Uncomment the mutual-TLS lines in `platform.env` and `litellm.env` (the
+`MEMMACHINE_BASE_URL` there replaces the http one). The platform's unit must be
+the one that starts `mock_platform.serve`: an install from before mutual TLS
+still runs `uvicorn mock_platform.app:app`, which opens no :8443 and now
+refuses to start with these lines set. Copy it again (as in step 5), then:
+
+```bash
+sudo cp $ENV_DIR/repo/deploy/systemd/ltmplat-platform.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl restart ltmplat-platform ltmplat-litellm
+systemctl is-active ltmplat-platform                                       # active
+curl -s --cacert $ENV_DIR/pki/ca.crt https://127.0.0.1:8443/healthz; echo "exit $?"
+# exit 56: the platform asked for a client certificate and got none, as intended.
+# exit 7: nothing listens on 8443; check the unit and `journalctl -u ltmplat-platform`.
+T=$ENV_DIR/litellm/tls
+curl -s --cacert $T/ca.crt --cert $T/litellm-ltm-platform-env.crt \
+  --key $T/litellm-ltm-platform-env.key https://127.0.0.1:8443/healthz   # {"ok":true}
+```
+
 ## 10. Open WebUI
 
 ```bash
@@ -352,7 +408,8 @@ seconds after the answer; wait ~30 s before asking elsewhere).
 
 ```bash
 cd $ENV_DIR/repo
-set -a; . $ENV_DIR/openwebui.env; . $ENV_DIR/litellm.env; set +a
+# litellm.env first: its FORWARD_USER_INFO_HEADER_JWT_SECRET is empty on purpose
+set -a; . $ENV_DIR/litellm.env; . $ENV_DIR/openwebui.env; set +a
 LITELLM_URL=http://127.0.0.1:4011 OWUI_URL=http://127.0.0.1:8087 PLATFORM_URL=http://127.0.0.1:8100 \
 PLATFORM_DB=$ENV_DIR/platform/registry.sqlite KEYS_FILE=$ENV_DIR/keys.env \
 ACCOUNTS_FILE=$ENV_DIR/accounts.txt OWUI_JWT_SECRET="$FORWARD_USER_INFO_HEADER_JWT_SECRET" \
@@ -360,7 +417,8 @@ PLATFORM_SERVICE_CREDENTIAL="$MEMMACHINE_API_KEY" LITELLM_MASTER_KEY="$LITELLM_M
   uv run --group platform python3 tools/platform_e2e.py
 ```
 
-Expect `41/41 passed` (identity, the Platform API itself, grants, key linking
+Expect `48/48 passed`, or `49/49` with step 9a's mutual TLS (add `PLATFORM_API_URL`
+and the `PLATFORM_*_CERT` / `_KEY` files, see the script's docstring) (identity, the Platform API itself, grants, key linking
 and reconcile; the script makes and removes a few throwaway LiteLLM keys with
 the master key). Unit tests, no network:
 
@@ -407,5 +465,6 @@ LiteLLM's own dashboard is at `http://127.0.0.1:4011/ui` (user `admin`, password
 - **SSO on LiteLLM's dashboard** (developers creating their own keys). LiteLLM's
   free tier refuses it beyond 5 users, and it counts every LiteLLM user row,
   service users included. Keys here are created through the API in step 8.
-- A real secret store, TLS, or network rules that make core reachable only
+- A real secret store, a real CA (step 9a's is a key on disk), TLS between the
+  platform and core, or network rules that make core reachable only
   from the platform.
