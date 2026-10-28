@@ -408,7 +408,8 @@ seconds after the answer; wait ~30 s before asking elsewhere).
 
 ```bash
 cd $ENV_DIR/repo
-set -a; . $ENV_DIR/openwebui.env; . $ENV_DIR/litellm.env; set +a
+# litellm.env first: its FORWARD_USER_INFO_HEADER_JWT_SECRET is empty on purpose
+set -a; . $ENV_DIR/litellm.env; . $ENV_DIR/openwebui.env; set +a
 LITELLM_URL=http://127.0.0.1:4011 OWUI_URL=http://127.0.0.1:8087 PLATFORM_URL=http://127.0.0.1:8100 \
 PLATFORM_DB=$ENV_DIR/platform/registry.sqlite KEYS_FILE=$ENV_DIR/keys.env \
 ACCOUNTS_FILE=$ENV_DIR/accounts.txt OWUI_JWT_SECRET="$FORWARD_USER_INFO_HEADER_JWT_SECRET" \
@@ -416,7 +417,7 @@ PLATFORM_SERVICE_CREDENTIAL="$MEMMACHINE_API_KEY" LITELLM_MASTER_KEY="$LITELLM_M
   uv run --group platform python3 tools/platform_e2e.py
 ```
 
-Expect `41/41 passed` (identity, the Platform API itself, grants, key linking
+Expect `48/48 passed` (`49/49` with step 9a's mutual TLS and its `PLATFORM_API_URL` / `PLATFORM_CA_CERT` / `PLATFORM_CLIENT_CERT` / `PLATFORM_CLIENT_KEY` set) (identity, the Platform API itself, grants, key linking
 and reconcile; the script makes and removes a few throwaway LiteLLM keys with
 the master key). Unit tests, no network:
 
