@@ -13,12 +13,16 @@ certificate's common name is the service label of the caller's credential
 (authorize.py, rule 1). Certificates: certs.py.
 
     MOCK_PLATFORM_MTLS_PORT     e.g. 8443; unset = no mutual TLS (as before)
+    MOCK_PLATFORM_MTLS_HOST     its address; default --host. 0.0.0.0 here lets a
+                                LiteLLM on another machine in without exposing the portal
     MOCK_PLATFORM_TLS_CERT      the platform's certificate (certs.py server)
     MOCK_PLATFORM_TLS_KEY       its key
     MOCK_PLATFORM_CLIENT_CA     the CA that signs LiteLLMs' certificates (ca.crt)
 
-Both listeners share one app, so one registry, one reconcile loop. The rest of
-the settings are app.py's.
+Both listeners share one app, so one registry, one reconcile loop. If either
+stops, so does the other, and a mutual-TLS listener that stops on its own is an
+exit with status 1, so systemd restarts the platform instead of leaving the
+portal up and every memory call refused. The rest of the settings are app.py's.
 """
 from __future__ import annotations
 
@@ -67,17 +71,19 @@ def mtls_config(app, host: str, port: int, certfile: str, keyfile: str, client_c
 
 
 async def serve(plain: uvicorn.Server, mtls: Optional[uvicorn.Server]) -> None:
-    """Run both; the plain server takes the signals and stops the other with it."""
+    """Run both until either stops, then stop the other. The plain server takes
+    the signals; the mutual-TLS one stopping first is SystemExit(1)."""
     if mtls is None:
         await plain.serve()
         return
     mtls.capture_signals = contextlib.nullcontext
-    other = asyncio.create_task(mtls.serve())
-    try:
-        await plain.serve()
-    finally:
-        mtls.should_exit = True
-        await other
+    plain_task, mtls_task = asyncio.create_task(plain.serve()), asyncio.create_task(mtls.serve())
+    done, _ = await asyncio.wait((plain_task, mtls_task), return_when=asyncio.FIRST_COMPLETED)
+    plain.should_exit = mtls.should_exit = True
+    for task in (plain_task, mtls_task):
+        await task  # re-raises a listener's own error
+    if plain_task not in done:
+        raise SystemExit("mock_platform: the mutual-TLS listener stopped; stopping the platform")
 
 
 def main(argv=None) -> None:
@@ -86,18 +92,20 @@ def main(argv=None) -> None:
     p.add_argument("--port", type=int, default=8100)
     a = p.parse_args(argv)
 
-    from .app import app
-    if app is None:
+    port = os.environ.get("MOCK_PLATFORM_MTLS_PORT", "").strip()
+    if not os.environ.get("MOCK_PLATFORM_DB"):
         raise SystemExit("MOCK_PLATFORM_DB is required (see mock_platform/app.py)")
+    from .app import from_env
+    app = from_env(mtls=bool(port))
     plain = uvicorn.Server(uvicorn.Config(app, host=a.host, port=a.port))
     mtls = None
-    port = os.environ.get("MOCK_PLATFORM_MTLS_PORT", "").strip()
     if port:
         missing = [n for n in ("MOCK_PLATFORM_TLS_CERT", "MOCK_PLATFORM_TLS_KEY", "MOCK_PLATFORM_CLIENT_CA")
                    if not os.environ.get(n, "").strip()]
         if missing:
             raise SystemExit(f"MOCK_PLATFORM_MTLS_PORT needs {', '.join(missing)}")
-        config = mtls_config(app, a.host, int(port), os.environ["MOCK_PLATFORM_TLS_CERT"],
+        host = os.environ.get("MOCK_PLATFORM_MTLS_HOST", "").strip() or a.host
+        config = mtls_config(app, host, int(port), os.environ["MOCK_PLATFORM_TLS_CERT"],
                              os.environ["MOCK_PLATFORM_TLS_KEY"], os.environ["MOCK_PLATFORM_CLIENT_CA"])
         config.load()  # a bad certificate or key stops the platform here, before anything listens
         mtls = uvicorn.Server(config)

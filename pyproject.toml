@@ -25,4 +25,6 @@ platform = [
     "uvicorn",
     # RS256 ID tokens from the SSO provider (Keycloak) at portal sign-in.
     "pyjwt[crypto]",
+    # certs.py: the mutual-TLS CA (pyjwt[crypto] brings it too, but certs.py uses it directly).
+    "cryptography",
 ]

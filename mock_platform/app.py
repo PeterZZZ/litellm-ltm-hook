@@ -24,7 +24,8 @@ not 404, so a caller cannot tell a hidden endpoint from a forbidden one.
 
 With MOCK_PLATFORM_MTLS_PORT, the API answers only LiteLLMs that present their
 client certificate (authorize.py, rule 1): run it with `python -m
-mock_platform.serve`, which adds that listener (serve.py).
+mock_platform.serve`, which adds that listener (serve.py). `uvicorn
+mock_platform.app:app` then refuses to start, since it would open no such listener.
 """
 from __future__ import annotations
 
@@ -279,7 +280,8 @@ def _relay(resp: httpx.Response) -> Response:
     )
 
 
-def _from_env() -> FastAPI:
+def from_env(*, mtls: bool = False) -> FastAPI:
+    """The app from MOCK_PLATFORM_*; `mtls` is the launcher's (serve.py) to say."""
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(message)s")
     db = os.environ.get("MOCK_PLATFORM_DB")
     core = os.environ.get("MOCK_PLATFORM_CORE_URL")
@@ -299,7 +301,7 @@ def _from_env() -> FastAPI:
         # People Corp SSO knows enrol themselves on first use (Leo, Oct 22).
         auto_enrol=os.environ.get("MOCK_PLATFORM_AUTO_ENROL", "1").strip() != "0",
         # The API is then for LiteLLMs with their client certificate only.
-        mtls=bool(os.environ.get("MOCK_PLATFORM_MTLS_PORT", "").strip()),
+        mtls=mtls,
     )
 
 
@@ -317,4 +319,15 @@ def _sso_from_env():
     )
 
 
-app = _from_env() if os.environ.get("MOCK_PLATFORM_DB") else None
+def __getattr__(name: str):
+    """`app`, for `uvicorn mock_platform.app:app`: built on first use, so serve.py
+    can import this module and build its own."""
+    if name != "app":
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    if os.environ.get("MOCK_PLATFORM_MTLS_PORT", "").strip():
+        raise RuntimeError("MOCK_PLATFORM_MTLS_PORT is set: run `python -m mock_platform.serve`, "
+                           "which opens the mutual-TLS listener (uvicorn mock_platform.app:app does not)")
+    if not os.environ.get("MOCK_PLATFORM_DB"):
+        return None
+    globals()["app"] = built = from_env()
+    return built

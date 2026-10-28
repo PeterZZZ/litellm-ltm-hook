@@ -54,10 +54,17 @@ SECRET = os.environ["OWUI_JWT_SECRET"]
 SERVICE = os.environ["PLATFORM_SERVICE_CREDENTIAL"]
 # The memory API: the portal's URL, or with mutual TLS the platform's TLS port.
 API = (os.environ.get("PLATFORM_API_URL") or PLATFORM).rstrip("/")
+# Read like the hook's MEMMACHINE_* files: the CA alone is honoured, the
+# certificate and its key go together.
+CA_CERT, CLIENT_CERT, CLIENT_KEY = (os.environ.get(n, "").strip() for n in
+                                    ("PLATFORM_CA_CERT", "PLATFORM_CLIENT_CERT", "PLATFORM_CLIENT_KEY"))
+if bool(CLIENT_CERT) != bool(CLIENT_KEY):
+    sys.exit("PLATFORM_CLIENT_CERT and PLATFORM_CLIENT_KEY go together: set both or neither.")
 TLS = None
-if os.environ.get("PLATFORM_CLIENT_CERT"):
-    TLS = ssl.create_default_context(cafile=os.environ.get("PLATFORM_CA_CERT") or None)
-    TLS.load_cert_chain(os.environ["PLATFORM_CLIENT_CERT"], os.environ["PLATFORM_CLIENT_KEY"])
+if CA_CERT or CLIENT_CERT:
+    TLS = ssl.create_default_context(cafile=CA_CERT or None)
+    if CLIENT_CERT:
+        TLS.load_cert_chain(CLIENT_CERT, CLIENT_KEY)
 MASTER = os.environ["LITELLM_MASTER_KEY"]
 
 keys = dict(line.strip().split("=", 1) for line in open(os.environ["KEYS_FILE"])

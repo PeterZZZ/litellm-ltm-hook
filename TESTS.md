@@ -11,7 +11,7 @@ Test files, in increasing scope:
 | `test_linking.py` | unit: keys looked up in LiteLLM and linked on their first call; the miss cache; reconcile | `uv run --group platform`; no network |
 | `test_enrol.py` | unit: enrolment on first use from a signed token, a personal key or a portal sign-in; strangers to SSO stay out | `uv run --group platform`; no network |
 | `test_portal.py` | unit: the portal (password sign-in via Open WebUI, own-namespace-only, switch, enroll) | `uv run --group platform`; no network |
-| `test_mtls.py` | mutual TLS over real sockets: the hook's search with its client certificate; the CA signs a LiteLLM's request only for a registered service name; another LiteLLM's certificate, none, or another CA's are refused; the plain listener refuses the API | `uv run --group platform`; no network beyond 127.0.0.1 |
+| `test_mtls.py` | mutual TLS over real sockets: the hook's search with its client certificate; the CA signs a LiteLLM's request only for a registered service name; another LiteLLM's certificate, none, or another CA's are refused; the plain listener refuses the API; a stopped TLS listener stops the platform, and plain uvicorn will not start with mutual TLS configured | `uv run --group platform`; no network beyond 127.0.0.1 |
 | `test_sso.py` | unit: Corp SSO in the portal (Keycloak code flow, ID-token checks, employee IDs from the directory) | `uv run --group platform`; no network |
 | `test_e2e_store.py` | end-to-end store path through the litellm proxy | litellm-test proxy up, virtual key, MemMachine up |
 | `test_e2e_recall.py` | end-to-end 2-turn recall through the litellm proxy | same as above |

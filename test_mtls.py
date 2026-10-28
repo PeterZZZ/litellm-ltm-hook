@@ -9,6 +9,7 @@ core is an httpx.MockTransport. The hook's own search path is the client.
     uv run --group platform pytest test_mtls.py -v
 """
 import asyncio
+import contextlib
 import os
 import stat
 import threading
@@ -204,3 +205,34 @@ def test_the_hooks_search_goes_over_mutual_tls(pki, platform, tmp_path, monkeypa
     with pytest.raises(httpx.HTTPStatusError) as exc:
         asyncio.run(hook._post_search(turn, "cats", "req-mtls"))
     assert exc.value.response.status_code == 401
+
+
+# ---------- serve.py ----------
+
+def test_a_stopped_mutual_tls_listener_stops_the_platform(pki):
+    # Not left with the portal up and every memory call refused: exit 1, systemd restarts it.
+    app = create_app(Registry(":memory:"), "http://core.test", mtls=True)
+    plain = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=0, log_level="warning"))
+    mtls = uvicorn.Server(serve.mtls_config(app, "127.0.0.1", 0, str(pki / "platform.crt"),
+                                            str(pki / "platform.key"), str(pki / "ca.crt"),
+                                            log_level="warning"))
+    plain.capture_signals = contextlib.nullcontext  # not the main thread
+
+    async def run():
+        task = asyncio.create_task(serve.serve(plain, mtls))
+        while not (plain.started and mtls.started):
+            await asyncio.sleep(0.02)
+        mtls.should_exit = True
+        await task
+
+    with pytest.raises(SystemExit, match="mutual-TLS listener stopped"):
+        asyncio.run(asyncio.wait_for(run(), 10))
+    assert plain.should_exit
+
+
+def test_plain_uvicorn_refuses_to_start_with_mutual_tls_configured(monkeypatch):
+    import mock_platform.app as app_module
+    monkeypatch.setenv("MOCK_PLATFORM_DB", ":memory:")
+    monkeypatch.setenv("MOCK_PLATFORM_MTLS_PORT", "8443")
+    with pytest.raises(RuntimeError, match="python -m mock_platform.serve"):
+        app_module.app

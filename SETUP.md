@@ -328,12 +328,19 @@ On one host these are only different directories; with LiteLLM elsewhere, the
 `.csr` travels to the CA and the `.crt` files travel back, and the `.key` stays.
 
 Uncomment the mutual-TLS lines in `platform.env` and `litellm.env` (the
-`MEMMACHINE_BASE_URL` there replaces the http one), then:
+`MEMMACHINE_BASE_URL` there replaces the http one). The platform's unit must be
+the one that starts `mock_platform.serve`: an install from before mutual TLS
+still runs `uvicorn mock_platform.app:app`, which opens no :8443 and now
+refuses to start with these lines set. Copy it again (as in step 5), then:
 
 ```bash
+sudo cp $ENV_DIR/repo/deploy/systemd/ltmplat-platform.service /etc/systemd/system/
+sudo systemctl daemon-reload
 sudo systemctl restart ltmplat-platform ltmplat-litellm
-curl -s --cacert $ENV_DIR/pki/ca.crt https://127.0.0.1:8443/healthz \
-  || echo "refused without a client certificate: as intended"
+systemctl is-active ltmplat-platform                                       # active
+curl -s --cacert $ENV_DIR/pki/ca.crt https://127.0.0.1:8443/healthz; echo "exit $?"
+# exit 56: the platform asked for a client certificate and got none, as intended.
+# exit 7: nothing listens on 8443; check the unit and `journalctl -u ltmplat-platform`.
 T=$ENV_DIR/litellm/tls
 curl -s --cacert $T/ca.crt --cert $T/litellm-ltm-platform-env.crt \
   --key $T/litellm-ltm-platform-env.key https://127.0.0.1:8443/healthz   # {"ok":true}

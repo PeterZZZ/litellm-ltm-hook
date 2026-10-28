@@ -270,8 +270,13 @@ MOCK_PLATFORM_DB=... MOCK_PLATFORM_CORE_URL=... \
 browsers (the portal and its SSO redirects are unchanged), and the TLS one
 requires a client certificate signed by `ca.crt`. With
 `MOCK_PLATFORM_MTLS_PORT` set, the memory API answers only on the TLS listener:
-the plain one refuses it with 401 `no client certificate`. LiteLLM then points
-at the TLS port:
+the plain one refuses it with 401 `no client certificate`. The TLS listener
+binds `MOCK_PLATFORM_MTLS_HOST` (default: `--host`), so it can face other
+machines while the portal stays on 127.0.0.1. If either listener stops, the
+other does too, and the TLS one stopping on its own exits with status 1, so a
+supervisor restarts the platform. `uvicorn mock_platform.app:app` refuses to
+start with `MOCK_PLATFORM_MTLS_PORT` set: it would open no TLS listener.
+LiteLLM then points at the TLS port:
 
 ```bash
 MEMMACHINE_BASE_URL=https://127.0.0.1:8443
@@ -280,7 +285,8 @@ MEMMACHINE_CLIENT_CERT=litellm-main.crt       # proves which LiteLLM is calling
 MEMMACHINE_CLIENT_KEY=litellm-main.key
 ```
 
-A store the platform refuses this way (401) or cannot connect for (no
+A store the platform refuses this way (401) is dead-lettered at once: the
+same request would be refused again. One it cannot connect for (no
 certificate, or another CA's: the handshake fails) is retried, then
 dead-lettered. Fix the certificates before replaying: a personal key's pair
 (Claude Code) is then stored whenever it is replayed, but an Open WebUI pair
