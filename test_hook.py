@@ -593,6 +593,23 @@ def test_the_gateway_refuses_to_start_with_a_frontends_signing_secret(tmp_path, 
     assert out.returncode != 0 and name in out.stderr and "s3cret" not in out.stderr
 
 
+def test_platform_tls_is_the_system_cas_unless_set():
+    assert h.platform_tls() is True
+    with pytest.raises(RuntimeError, match="both or neither"):
+        h.platform_tls(client_cert="/pki/litellm-main.crt")
+
+
+@pytest.mark.parametrize("env", [{"MEMMACHINE_CA_CERT": "/pki/ca.crt"},
+                                 {"MEMMACHINE_BASE_URL": "https://platform.test",
+                                  "MEMMACHINE_CA_CERT": "/no/such/ca.crt"}])
+def test_the_gateway_refuses_to_start_with_unusable_tls_settings(env):
+    # Certificates over plain http, or a file that is not there: stop at startup.
+    import subprocess, sys
+    out = subprocess.run([sys.executable, "-c", "import memmachine_hook"], env={**os.environ, **env},
+                         capture_output=True, text=True, cwd=str(Path(h.__file__).parent))
+    assert out.returncode != 0 and ("https://" in out.stderr or "/no/such/ca.crt" in out.stderr)
+
+
 # ---------- turns ----------
 
 class TestTurns:

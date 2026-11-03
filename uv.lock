@@ -1122,6 +1122,7 @@ dependencies = [
 
 [package.dev-dependencies]
 platform = [
+    { name = "cryptography" },
     { name = "fastapi" },
     { name = "pyjwt", extra = ["crypto"] },
     { name = "uvicorn" },
@@ -1137,6 +1138,7 @@ requires-dist = [
 
 [package.metadata.requires-dev]
 platform = [
+    { name = "cryptography" },
     { name = "fastapi" },
     { name = "pyjwt", extras = ["crypto"] },
     { name = "uvicorn" },
