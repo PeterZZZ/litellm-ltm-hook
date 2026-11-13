@@ -458,7 +458,7 @@ def mount_portal(
         return {
             "email": email, "name": name, "enrolled": True, "role": user.role, "ui": UI_VERSION,
             "employee_id": user.employee_id, "sso_employee_id": entry.get("employee_id"),
-            "signed_in_via": via,
+            "signed_in_via": via, "created_at": user.created_at,
             # One row per project name the person holds: their own (default
             # first), then projects shared with them. `*` cannot be listed.
             "namespaces": await namespaces_of(user),
