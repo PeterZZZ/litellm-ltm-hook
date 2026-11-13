@@ -737,10 +737,16 @@ def mount_portal(
     # their own. Deletes go through delete_ids, so a shared project's member
     # still deletes only what they wrote.
 
+    # The console calls a person's default project by their own ID, as the
+    # hosted console does, so that ID is the default project's name here.
+    def console_project(user: User, name) -> str:
+        name = str(name or "").strip()
+        return user.project_id if name == user.person_id else name
+
     async def console_body(request: Request) -> tuple[User, Namespace, dict]:
         user = enrolled(request, write=True)
         body = await body_of(request)
-        return user, ns_of(user, body.get("project_id")), body
+        return user, ns_of(user, console_project(user, body.get("project_id"))), body
 
     @app.post("/portal/api/console/projects/list")
     async def console_projects(request: Request):
@@ -748,9 +754,28 @@ def mount_portal(
         rows = []
         for name in projects_of(user):
             ns = user.resolve(name)
-            rows.append({"org_id": "", "project_id": name,
+            rows.append({"org_id": "", "project_id": user.person_id if name == user.project_id else name,
                          "description": "Shared with you" if ns and ns.shared else "Yours"})
         return {"projects": rows}
+
+    @app.post("/portal/api/console/projects")
+    async def console_project_add(request: Request):
+        """A project of the person's own, as the console's drawer creates one."""
+        user = enrolled(request, write=True)
+        body = await body_of(request)
+        name = console_project(user, body.get("project_id"))
+        if name != user.project_id:
+            change_grant(user, name, True, by=user, allow_any=False)
+        return JSONResponse({"org_id": "", "project_id": body.get("project_id"),
+                             "description": str(body.get("description") or "")}, status_code=201)
+
+    @app.post("/portal/api/console/projects/delete")
+    async def console_project_delete(request: Request):
+        """Drops the project from the person's grants; its memories stay in core, as the portal's Remove does."""
+        user = enrolled(request, write=True)
+        body = await body_of(request)
+        change_grant(user, console_project(user, body.get("project_id")), False, by=user, allow_any=False)
+        return Response(status_code=204)
 
     @app.post("/portal/api/console/projects/episode_count/get")
     async def console_episode_count(request: Request):

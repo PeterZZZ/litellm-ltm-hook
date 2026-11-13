@@ -464,8 +464,27 @@ class TestConsoleMemory:
         world.reg.grant("alice@corp.example", "research")
         r = world.client.post("/portal/api/console/projects/list", headers=W, json={})
         names = [p["project_id"] for p in r.json()["projects"]]
-        assert names == ["default", "research"]
+        # The default project goes by the person's own ID, as the console expects.
+        assert names == ["alice@corp.example", "research"]
         assert all(p["org_id"] == "" for p in r.json()["projects"])
+
+    def test_the_persons_id_names_their_default_project(self, world):
+        login(world)
+        r = world.client.post("/portal/api/console/projects/episode_count/get", headers=W,
+                              json={"project_id": "alice@corp.example"})
+        assert r.json() == {"count": 2}
+
+    def test_create_and_delete_a_project(self, world):
+        login(world)
+        r = world.client.post("/portal/api/console/projects", headers=W,
+                              json={"project_id": "research", "description": ""})
+        assert r.status_code == 201
+        assert "research" in world.reg.user_by_email("alice@corp.example").grants
+        r = world.client.post("/portal/api/console/projects/delete", headers=W, json={"project_id": "research"})
+        assert r.status_code == 204
+        assert "research" not in world.reg.user_by_email("alice@corp.example").grants
+        r = world.client.post("/portal/api/console/projects/delete", headers=W, json={"project_id": "alice@corp.example"})
+        assert r.status_code == 400
 
     def test_list_goes_to_the_persons_namespace(self, world):
         login(world)
