@@ -85,8 +85,8 @@ def mount_portal(
     litellm_url = (litellm_url or "").rstrip("/") or None
     # sid -> {"email", "name", "employee_id", "id_token", "via", "expires"}
     sessions: dict[str, dict] = {}
-    # state -> (nonce, redirect_uri, expires): sign-ins sent to Keycloak, not back yet
-    pending: dict[str, tuple[str, str, float]] = {}
+    # state -> (nonce, redirect_uri, expires, next): sign-ins sent to Keycloak, not back yet
+    pending: dict[str, tuple[str, str, float, str]] = {}
 
     # ---------- session plumbing ----------
 
@@ -110,8 +110,11 @@ def mount_portal(
         return sid
 
     def set_session_cookie(resp: Response, sid: str) -> None:
+        # Path "/" rather than "/portal": the platform console runs on another
+        # port of the same host, and a cookie ignores ports, so its server can
+        # forward this session to the portal's API. Still HttpOnly and Strict.
         resp.set_cookie(COOKIE, sid, max_age=SESSION_SECONDS, httponly=True,
-                        samesite="strict", path="/portal")
+                        samesite="strict", path="/")
 
     def enrolled(request: Request, *, write: bool = False) -> User:
         email, _ = current(request, write=write)
@@ -329,6 +332,23 @@ def mount_portal(
         return {"sso": sso is not None, "provider": "Corp SSO" if sso else None,
                 "password": sso is None and owui_url is not None, "ui": UI_VERSION}
 
+    def same_host_next(request: Request, default: str) -> str:
+        """Where to land after sign-in or sign-out: `?next=`, but only a URL on
+        this host (any port), so the portal cannot be used to bounce people to
+        another site. The platform console lives on another port of this host."""
+        wanted = str(request.query_params.get("next") or "").strip()
+        if not wanted:
+            return default
+        if wanted.startswith("/") and not wanted.startswith("//"):
+            return wanted
+        try:
+            target = httpx.URL(wanted)
+        except (httpx.InvalidURL, ValueError):
+            return default
+        if target.scheme not in ("http", "https") or target.host != request.url.hostname:
+            return default
+        return wanted
+
     def redirect_uri(request: Request) -> str:
         # Back to whichever host the browser used (localhost or 127.0.0.1);
         # Keycloak only accepts the ones registered for this client.
@@ -343,7 +363,7 @@ def mount_portal(
             pending.pop(st, None)
         state, nonce = secrets.token_urlsafe(24), secrets.token_urlsafe(24)
         back = redirect_uri(request)
-        pending[state] = (nonce, back, now + LOGIN_SECONDS)
+        pending[state] = (nonce, back, now + LOGIN_SECONDS, same_host_next(request, "/portal/"))
         out = RedirectResponse(await sso.login_url(back, state, nonce), status_code=302)
         # Ties the returning browser to the one that started the sign-in. Lax,
         # because the return is a top-level navigation from Keycloak.
@@ -359,7 +379,7 @@ def mount_portal(
         if error or not code or entry is None or entry[2] < time.time() \
                 or request.cookies.get(STATE_COOKIE) != state:
             return _bounce("/portal/?signin=failed")
-        nonce, back, _ = entry
+        nonce, back, _, landing = entry
         try:
             claims, id_token = await sso.finish_login(code, back, nonce)
         except (ValueError, httpx.HTTPError, jwt.PyJWTError) as exc:
@@ -372,7 +392,7 @@ def mount_portal(
             "email": email, "name": str(claims.get("name") or ""),
             "employee_id": claims.get("employee_id"), "id_token": id_token, "via": "sso",
         })
-        out = _bounce("/portal/")
+        out = _bounce(landing)
         set_session_cookie(out, sid)
         out.delete_cookie(STATE_COOKIE, path="/portal/auth")
         return out
@@ -411,10 +431,11 @@ def mount_portal(
         logout_url = None
         if sso is not None and entry.get("id_token"):
             # End the Keycloak session too, or "sign in" would log straight back in.
-            logout_url = await sso.logout_url(entry["id_token"],
-                                              str(request.base_url).rstrip("/") + "/portal/")
+            logout_url = await sso.logout_url(
+                entry["id_token"],
+                same_host_next(request, str(request.base_url).rstrip("/") + "/portal/"))
         out = JSONResponse({"ok": True, "logout_url": logout_url})
-        out.delete_cookie(COOKIE, path="/portal")
+        out.delete_cookie(COOKIE, path="/")
         return out
 
     # ---------- me: identity, namespace, ways in, history ----------
@@ -708,6 +729,67 @@ def mount_portal(
                         media_type="application/json",
                         headers={"Content-Disposition":
                                  f'attachment; filename="memory-{ns.org_id}-{ns.project_id}.json"'})
+
+    # ---------- the platform console's memory pages ----------
+    # The console speaks core's v2 shapes and names a project but no org. These
+    # routes put the signed-in person's namespace behind the name (ns_of) and
+    # pass core's answer back as is, so the console's pages need no shapes of
+    # their own. Deletes go through delete_ids, so a shared project's member
+    # still deletes only what they wrote.
+
+    async def console_body(request: Request) -> tuple[User, Namespace, dict]:
+        user = enrolled(request, write=True)
+        body = await body_of(request)
+        return user, ns_of(user, body.get("project_id")), body
+
+    @app.post("/portal/api/console/projects/list")
+    async def console_projects(request: Request):
+        user = enrolled(request, write=True)
+        rows = []
+        for name in projects_of(user):
+            ns = user.resolve(name)
+            rows.append({"org_id": "", "project_id": name,
+                         "description": "Shared with you" if ns and ns.shared else "Yours"})
+        return {"projects": rows}
+
+    @app.post("/portal/api/console/projects/episode_count/get")
+    async def console_episode_count(request: Request):
+        _, ns, _ = await console_body(request)
+        return {"count": await episode_count(ns)}
+
+    @app.post("/portal/api/console/memories/list")
+    async def console_list(request: Request):
+        _, ns, body = await console_body(request)
+        return await core("/api/v2/memories/list", {**body, "org_id": ns.org_id, "project_id": ns.project_id})
+
+    @app.post("/portal/api/console/memories/search")
+    async def console_search(request: Request):
+        _, ns, body = await console_body(request)
+        return await core("/api/v2/memories/search", {**body, "org_id": ns.org_id, "project_id": ns.project_id})
+
+    @app.post("/portal/api/console/memories/episodic/delete")
+    async def console_delete(request: Request):
+        user, ns, body = await console_body(request)
+        return {"deleted": await delete_ids(user, [str(i) for i in body.get("episodic_ids") or []], ns)}
+
+    @app.post("/portal/api/console/memories")
+    async def console_add(request: Request):
+        user, ns, body = await console_body(request)
+        messages = []
+        for m in body.get("messages") or []:
+            if not isinstance(m, dict) or not str(m.get("content") or "").strip():
+                raise HTTPException(400, "every message needs content")
+            messages.append({
+                **m, "producer": user.org_id, "produced_for": "litellm",
+                "metadata": {**(m.get("metadata") or {}), "user_id": user.person_id,
+                             "session_id": user.org_id, "via": "manual", "source": "console"},
+            })
+        if not messages:
+            raise HTTPException(400, "nothing to remember")
+        await core("/api/v2/projects", {"org_id": ns.org_id, "project_id": ns.project_id,
+                                        "description": "mock platform"})
+        return await core("/api/v2/memories", {**body, "org_id": ns.org_id, "project_id": ns.project_id,
+                                               "messages": messages})
 
     # ---------- admin ----------
 

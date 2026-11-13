@@ -198,3 +198,32 @@ class TestDirectory:
         assert r.json()["employee_id"] == {"from": None, "to": "E12345"}
         alice = world.reg.user_by_email("alice@corp.example")
         assert (alice.employee_id, alice.org_id) == ("E12345", "E12345")
+
+
+class TestConsoleReturn:
+    """The platform console on another port of this host sends people here to
+    sign in and wants them back afterwards."""
+
+    def test_next_on_this_host_is_honoured(self, world):
+        r = world.client.get("/portal/auth/login?next=http://testserver:3100/access", follow_redirects=False)
+        q = dict(urllib.parse.parse_qsl(urllib.parse.urlparse(r.headers["location"]).query))
+        world.codes["c1"] = id_token("root@corp.example", q["nonce"])
+        r = world.client.get(f"/portal/auth/callback?state={q['state']}&code=c1")
+        assert "url=http://testserver:3100/access" in r.text
+        assert "path=/" in r.headers["set-cookie"].lower()
+        assert world.client.get("/portal/api/me").status_code == 200
+
+    @pytest.mark.parametrize("bad", ["http://evil.test/", "//evil.test/x", "javascript:alert(1)", "ftp://testserver/x"])
+    def test_next_elsewhere_lands_on_the_portal(self, world, bad):
+        r = world.client.get(f"/portal/auth/login?next={urllib.parse.quote(bad, safe='')}", follow_redirects=False)
+        q = dict(urllib.parse.parse_qsl(urllib.parse.urlparse(r.headers["location"]).query))
+        world.codes["c1"] = id_token("root@corp.example", q["nonce"])
+        r = world.client.get(f"/portal/auth/callback?state={q['state']}&code=c1")
+        assert "url=/portal/" in r.text and "evil" not in r.text
+
+    def test_logout_returns_to_next_on_this_host(self, world):
+        sign_in(world, "root@corp.example")
+        r = world.client.post("/portal/api/logout?next=http://testserver:3100/", headers=W)
+        assert "post_logout_redirect_uri=http%3A%2F%2Ftestserver%3A3100%2F" in r.json()["logout_url"]
+        r = world.client.post("/portal/api/logout?next=http://evil.test/", headers=W)
+        assert "evil" not in (r.json()["logout_url"] or "")

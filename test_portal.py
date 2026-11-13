@@ -453,3 +453,60 @@ def test_turns_pair_and_flag_automatic():
     assert [t["ids"] for t in turns] == [["5"], ["3", "4"], ["1", "2"]]
     assert turns[1]["automatic"] == "chat title"
     assert turns[2]["source"] == "Open WebUI"
+
+
+class TestConsoleMemory:
+    """The platform console's memory pages: core's shapes behind the person's
+    own namespace, never an org the browser names."""
+
+    def test_projects_list_names_what_the_person_holds(self, world):
+        login(world)
+        world.reg.grant("alice@corp.example", "research")
+        r = world.client.post("/portal/api/console/projects/list", headers=W, json={})
+        names = [p["project_id"] for p in r.json()["projects"]]
+        assert names == ["default", "research"]
+        assert all(p["org_id"] == "" for p in r.json()["projects"])
+
+    def test_list_goes_to_the_persons_namespace(self, world):
+        login(world)
+        r = world.client.post("/portal/api/console/memories/list", headers=W,
+                              json={"org_id": "bob_corp_example", "project_id": "default",
+                                    "page_num": 0, "page_size": 10})
+        assert r.status_code == 200
+        texts = [e["content"] for e in r.json()["content"]["episodic_memory"]]
+        assert texts == ["I ride a Kona bike", "Noted, a Kona."]
+        sent = [b for p, b in world.calls if p == "/api/v2/memories/list"][-1]
+        assert sent["org_id"] == "alice_corp_example"
+
+    def test_a_project_not_theirs_is_refused(self, world):
+        login(world)
+        r = world.client.post("/portal/api/console/memories/list", headers=W,
+                              json={"project_id": "secret", "page_num": 0, "page_size": 10})
+        assert r.status_code == 403
+
+    def test_delete_and_count(self, world):
+        login(world)
+        r = world.client.post("/portal/api/console/memories/episodic/delete", headers=W,
+                              json={"project_id": "default", "episodic_ids": ["1", "999"]})
+        assert r.json() == {"deleted": 1}
+        r = world.client.post("/portal/api/console/projects/episode_count/get", headers=W,
+                              json={"project_id": "default"})
+        assert r.json() == {"count": 1}
+
+    def test_add_carries_the_persons_provenance(self, world):
+        login(world)
+        r = world.client.post("/portal/api/console/memories", headers=W,
+                              json={"project_id": "default", "types": [],
+                                    "messages": [{"content": "I moved to Daejeon", "role": "user"}]})
+        assert r.status_code == 200
+        sent = [b for p, b in world.calls if p == "/api/v2/memories"][-1]
+        assert sent["org_id"] == "alice_corp_example"
+        assert sent["messages"][0]["producer"] == "alice_corp_example"
+        assert sent["messages"][0]["metadata"]["via"] == "manual"
+
+    def test_writes_need_the_portal_header_and_a_session(self, world):
+        assert world.client.post("/portal/api/console/memories/list", headers=W,
+                                 json={"project_id": "default"}).status_code == 401
+        login(world)
+        assert world.client.post("/portal/api/console/memories/list",
+                                 json={"project_id": "default"}).status_code == 403
