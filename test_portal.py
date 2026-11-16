@@ -400,6 +400,16 @@ class TestAdmin:
             authorize(world.reg, evidence(world, "sk-alice"))
         assert exc.value.decision == "not-enrolled"
 
+    def test_erase_keeps_the_account(self, world):
+        login(world, "root@corp.example")
+        r = world.client.post("/portal/api/admin/users/memories/clear", headers=W,
+                              json={"email": "alice@corp.example"})
+        assert r.json()["memories_deleted"] == 2
+        assert world.reg.user_by_email("alice@corp.example") is not None
+        assert world.client.post("/portal/api/admin/users/memories/clear", headers=W,
+                                  json={"email": "nobody@corp.example"}).status_code == 404
+        assert any(row["op"] == "admin:erase" for row in world.reg.audit(limit=5))
+
     def test_delete_keeps_memory_unless_asked(self, world):
         login(world, "root@corp.example")
         world.client.post("/portal/api/admin/users/delete", headers=W, json={"email": "bob@corp.example"})
@@ -493,9 +503,12 @@ class TestConsoleMemory:
                                     "page_num": 0, "page_size": 10})
         assert r.status_code == 200
         texts = [e["content"] for e in r.json()["content"]["episodic_memory"]]
-        assert texts == ["I ride a Kona bike", "Noted, a Kona."]
+        assert texts == ["Noted, a Kona.", "I ride a Kona bike"]   # newest first
         sent = [b for p, b in world.calls if p == "/api/v2/memories/list"][-1]
         assert sent["org_id"] == "alice_corp_example"
+        r = world.client.post("/portal/api/console/memories/list", headers=W,
+                              json={"project_id": "default", "page_num": 1, "page_size": 1})
+        assert [e["content"] for e in r.json()["content"]["episodic_memory"]] == ["I ride a Kona bike"]
 
     def test_a_project_not_theirs_is_refused(self, world):
         login(world)

@@ -784,8 +784,17 @@ def mount_portal(
 
     @app.post("/portal/api/console/memories/list")
     async def console_list(request: Request):
+        """Episodes newest first. Core lists them oldest first and has no
+        order to ask for, so the page is cut from the whole list here: the
+        console's first page then shows what the person just said to Open
+        WebUI, which is what someone opening the page wants to see."""
         _, ns, body = await console_body(request)
-        return await core("/api/v2/memories/list", {**body, "org_id": ns.org_id, "project_id": ns.project_id})
+        if body.get("type") not in (None, "", "episodic") or body.get("filter"):
+            return await core("/api/v2/memories/list", {**body, "org_id": ns.org_id, "project_id": ns.project_id})
+        size = max(1, _num(body.get("page_size")) or 100)
+        start = max(0, _num(body.get("page_num"))) * size
+        episodes = list(reversed(await all_episodes(ns)))
+        return {"status": 0, "content": {"episodic_memory": episodes[start:start + size]}}
 
     @app.post("/portal/api/console/memories/search")
     async def console_search(request: Request):
@@ -945,6 +954,24 @@ def mount_portal(
         registry.record(op="admin:delete", decision="allow", status=200, email=target.email,
                         reason=f"by {actor.email}; memories deleted: {removed}")
         return {"deleted": target.email, "memories_deleted": removed}
+
+    @app.post("/portal/api/admin/users/memories/clear")
+    async def admin_clear(request: Request):
+        """Erase every memory of a person's own org, account untouched: the
+        console's People page offers this apart from deleting the account."""
+        actor = admin(request, write=True)
+        body = await body_of(request)
+        target = registry.user_by_email(str(body.get("email") or ""))
+        if target is None:
+            raise HTTPException(404, "no such account")
+        removed = 0
+        for project in [target.project_id] + [g for g in target.grants if g not in (target.project_id, ANY_PROJECT)]:
+            ns = Namespace(target.org_id, project, target.user_id)
+            removed += await delete_ids(target, [str(e.get("uid")) for e in await all_episodes(ns)], ns)
+        registry.record(op="admin:erase", decision="allow", status=200, email=target.email,
+                        reason=f"by {actor.email}; memories deleted: {removed}",
+                        namespace=f"{target.org_id}/{target.project_id}")
+        return {"email": target.email, "memories_deleted": removed}
 
     @app.get("/portal/api/admin/trust")
     async def admin_trust(request: Request):
