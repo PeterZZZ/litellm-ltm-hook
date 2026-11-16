@@ -1,0 +1,17 @@
+[Unit]
+Description=ltm-platform-env: MemMachine-Platform console prototype, the platform the hook talks to
+After=network-online.target ltmplat-keycloak.service
+
+[Service]
+Type=exec
+User=ubuntu
+EnvironmentFile=/opt/ltm-platform-env/console.env
+Environment=PATH=/usr/local/bin:/usr/bin:/bin
+# A checkout of MemMachine-Platform's frontend (or a symlink to one) with its node_modules installed.
+WorkingDirectory=/opt/ltm-platform-env/console
+ExecStart=/opt/ltm-platform-env/console/node_modules/.bin/next dev -p 3100
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

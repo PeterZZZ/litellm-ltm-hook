@@ -14,6 +14,10 @@ What it makes, in realm "corp":
   - client "open-webui" (Open WebUI's OIDC login) and client "memmachine-platform"
     (the portal's login, plus a service account that may read users, for the
     platform's employee-ID lookups); both get an employee_id claim in their tokens;
+  - client "memmachine-console", public with PKCE, for the MemMachine-Platform
+    console's keycloak-js sign-in (CONSOLE_URLS), with the same employee_id claim;
+  - realm role "admin", which the console reads for who administers it, held by
+    the people in ADMINS;
   - the users in USERS, with the passwords from ACCOUNTS_FILE ("email password" lines).
 
 Client secrets are generated once and written to SECRETS_OUT (mode 600); an existing
@@ -31,6 +35,7 @@ KC = os.environ.get("KEYCLOAK_URL", "http://127.0.0.1:8180").rstrip("/")
 REALM = os.environ.get("KEYCLOAK_REALM", "corp")
 OWUI_URLS = os.environ.get("OWUI_URLS", "http://127.0.0.1:8087,http://localhost:8087").split(",")
 PORTAL_URLS = os.environ.get("PORTAL_URLS", "http://127.0.0.1:8100,http://localhost:8100").split(",")
+CONSOLE_URLS = os.environ.get("CONSOLE_URLS", "http://127.0.0.1:3100,http://localhost:3100").split(",")
 
 # email -> (first name, last name, employee ID)
 USERS = {
@@ -39,6 +44,8 @@ USERS = {
     "bob@corp.example": ("Bob", "Lee", "E67890"),
     "carol@corp.example": ("Carol", "Park", "E24680"),
 }
+# Who holds the realm's "admin" role: the console shows its People, Audit and Trust pages to them.
+ADMINS = {"admin@corp.example"}
 
 
 def call(method, path, body=None, token=None, form=None):
@@ -134,6 +141,51 @@ def ensure_client(t, client_id, secret, base_urls, callback, service_account=Fal
     return cid
 
 
+def ensure_public_client(t, client_id, base_urls):
+    """A browser app's client: no secret, PKCE, every path under its origins may finish a login."""
+    rep = {
+        "clientId": client_id, "enabled": True, "protocol": "openid-connect",
+        "publicClient": True, "standardFlowEnabled": True, "directAccessGrantsEnabled": False,
+        "redirectUris": [u.rstrip("/") + "/*" for u in base_urls],
+        "webOrigins": [u.rstrip("/") for u in base_urls],
+        "attributes": {"pkce.code.challenge.method": "S256",
+                       "post.logout.redirect.uris": "##".join(u.rstrip("/") + "/*" for u in base_urls)},
+        "protocolMappers": [MAPPER],
+    }
+    _, found, _ = call("GET", f"/admin/realms/{REALM}/clients?clientId={client_id}", token=t)
+    if found:
+        cid = found[0]["id"]
+        rep.pop("protocolMappers")
+        s, body, _ = call("PUT", f"/admin/realms/{REALM}/clients/{cid}", {**found[0], **rep}, t)
+        assert s == 204, (s, body)
+        _, mappers, _ = call("GET", f"/admin/realms/{REALM}/clients/{cid}/protocol-mappers/models", token=t)
+        if not any(m["name"] == "employee_id" for m in mappers):
+            call("POST", f"/admin/realms/{REALM}/clients/{cid}/protocol-mappers/models", MAPPER, t)
+        print(f"client {client_id}: updated")
+    else:
+        s, body, _ = call("POST", f"/admin/realms/{REALM}/clients", rep, t)
+        assert s == 201, (s, body)
+        print(f"client {client_id}: created")
+
+
+def ensure_realm_role(t, name):
+    s, role, _ = call("GET", f"/admin/realms/{REALM}/roles/{name}", token=t)
+    if s == 404:
+        s, body, _ = call("POST", f"/admin/realms/{REALM}/roles", {"name": name}, t)
+        assert s == 201, (s, body)
+        _, role, _ = call("GET", f"/admin/realms/{REALM}/roles/{name}", token=t)
+        print(f"realm role {name}: created")
+    return role
+
+
+def grant_realm_role(t, email, role):
+    _, found, _ = call("GET", f"/admin/realms/{REALM}/users?email={urllib.parse.quote(email)}&exact=true", token=t)
+    uid = found[0]["id"]
+    s, body, _ = call("POST", f"/admin/realms/{REALM}/users/{uid}/role-mappings/realm", [role], t)
+    assert s == 204, (s, body)
+    print(f"user {email}: realm role {role['name']}")
+
+
 def grant_view_users(t, client_uuid):
     _, sa, _ = call("GET", f"/admin/realms/{REALM}/clients/{client_uuid}/service-account-user", token=t)
     _, rm, _ = call("GET", f"/admin/realms/{REALM}/clients?clientId=realm-management", token=t)
@@ -187,8 +239,12 @@ def main():
     pid = ensure_client(t, "memmachine-platform", sec["PLATFORM_OIDC_CLIENT_SECRET"], PORTAL_URLS,
                         "/portal/auth/callback", service_account=True)
     grant_view_users(t, pid)
+    ensure_public_client(t, "memmachine-console", CONSOLE_URLS)
+    admin = ensure_realm_role(t, "admin")
     for email, (first, last, emp) in USERS.items():
         ensure_user(t, email, first, last, emp, passwords[email])
+        if email in ADMINS:
+            grant_realm_role(t, email, admin)
 
 
 if __name__ == "__main__":

@@ -3,16 +3,22 @@
 How to stand up the whole chain this branch was tested on, from an empty host:
 
 ```
-browser ──► Keycloak :8180 (Corp SSO) ◄── sign-in for Open WebUI and the portal
+browser ──► Keycloak :8180 (Corp SSO) ◄── sign-in for Open WebUI and the console
    │
    ├─► Open WebUI :8087 ──(shared app key + signed user token)──► LiteLLM :4011 + hook
    │                                                                  │ X-MemMachine-* headers
-   └─► platform portal :8100/portal/                                  ▼
-                                                     mock platform :8100 ──► MemMachine core :8090
-Claude Code / curl ──(personal virtual key)──► LiteLLM :4011 ──┘              │ Postgres + Qdrant
-                                                      ▲                       │ embedder + LLM
-                                                      └───────────────────────┘ (plain model names)
+   └─► console :3100 (MemMachine-Platform prototype, mock API)  ◄─────┘
+         the platform: verifies the token, enrols the person ──► MemMachine core :8090
+         (people, projects and the audit in its fixture; memories at core)
+Claude Code / curl ──(personal virtual key)──► LiteLLM :4011 ──► refused: the console knows
+                                                                 people by Open WebUI's token only
+mock platform :8100 (+ portal) ──► MemMachine core :8090   stands alone since 2026-11-16: nothing
+                                                            points at it; step 9 keeps it running
 ```
+
+Until 2026-11-16 the hook called the mock platform on :8100, which forwarded to
+MemMachine core. The console now plays the platform (step 9b) and :8100 is a
+mock on its own; the registry, portal and `platform_e2e.py` still describe it.
 
 Read [`mock_platform/README.md`](./mock_platform/README.md) for what each piece
 checks and why; this file is only how to build it. Templates are in
@@ -290,6 +296,45 @@ sudo systemctl restart ltmplat-litellm     # picks up MEMMACHINE_API_KEY
 curl -s http://127.0.0.1:8100/portal/api/config   # {"sso":true,...}
 ```
 
+## 9b. The console as the platform
+
+The MemMachine-Platform console prototype (PR #1553's branch, plus the gateway
+in `frontend/app/api/mock/v2/_gateway.ts`) serves the hook's two calls from its
+mock API, verifies Open WebUI's signed token, enrols the person on first use and
+forwards what they chat to MemMachine core under their namespace
+(`COMPANY_CORE_URL`; without it the fixture keeps the memories). It signs people in through the
+`corp` realm (`memmachine-console`, a public client step 5's script creates) and
+shows an admin (realm role `admin`, step 5) the People, Audit and Trust pages.
+
+```bash
+git clone https://github.com/MemVerge/MemMachine-Platform $ENV_DIR/console-repo
+cd $ENV_DIR/console-repo && git checkout feat/company-console-platform
+cd frontend && pnpm install
+ln -s $ENV_DIR/console-repo/frontend $ENV_DIR/console
+cp $ENV_DIR/repo/deploy/env/console.env.example $ENV_DIR/console.env && chmod 600 $ENV_DIR/console.env
+# fill in COMPANY_GATEWAY_CREDENTIAL (litellm.env MEMMACHINE_API_KEY) and
+# COMPANY_OWUI_SECRET (openwebui.env FORWARD_USER_INFO_HEADER_JWT_SECRET)
+sudo cp $ENV_DIR/repo/deploy/systemd/ltmplat-console.service /etc/systemd/system/
+sudo systemctl daemon-reload && sudo systemctl enable --now ltmplat-console
+curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:3100/api/mock/auth/me   # 401: sign in first
+```
+
+Then point the hook at it and restart LiteLLM:
+
+```
+# litellm.env
+MEMMACHINE_BASE_URL=http://127.0.0.1:3100/api/mock
+MEMMACHINE_API_PREFIX=/v2
+```
+
+With that, `MOCK_PLATFORM_LITELLM_URL` and `MOCK_PLATFORM_LITELLM_KEY` can be
+emptied in `platform.env` so :8100 reconciles with nothing; it keeps answering
+its portal and its own API for anyone who points a hook at it.
+
+People, projects and the audit live in the dev server's memory: a restart of
+`ltmplat-console` forgets who enrolled, and the next chat or sign-in enrols them
+again. Memories are at core and survive.
+
 ## 10. Open WebUI
 
 ```bash
@@ -376,8 +421,17 @@ must be included, because sign-in redirects the browser there. Use
 `http://127.0.0.1:<port>` in the browser, not `localhost`.
 
 ```bash
-ssh -L 8087:127.0.0.1:8087 -L 8100:127.0.0.1:8100 -L 8180:127.0.0.1:8180 -L 4011:127.0.0.1:4011 <host>
+ssh -L 3100:127.0.0.1:3100 -L 8087:127.0.0.1:8087 -L 8100:127.0.0.1:8100 -L 8180:127.0.0.1:8180 -L 4011:127.0.0.1:4011 <host>
 ```
+
+With the console as the platform (step 9b), `platform_e2e.py` no longer
+describes the running chain: the hook calls :3100, not :8100. What was checked
+there on 2026-11-16: a Corp SSO sign-in on :3100 as alice; two chats through Open
+WebUI with `memmachine-glm-5.2`, the second recalling the first's fact; the
+Memory page listing both turns newest first; Access listing Open WebUI as a way
+in with the decisions in History; the switch off refusing the next chat as
+not-enrolled, recorded as memory-off; and admin@corp.example seeing alice
+enrolled on People and the decisions in Audit.
 
 LiteLLM's own dashboard is at `http://127.0.0.1:4011/ui` (user `admin`, password
 = the master key). It has no SSO in this stack.
