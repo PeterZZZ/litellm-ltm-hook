@@ -1,0 +1,19 @@
+[Unit]
+Description=ltm-platform-env: Open WebUI 0.6.5 (the customer's version) behind the same LiteLLM, through the signer
+After=network-online.target ltmplat-litellm.service ltmplat-keycloak.service ltmplat-owui-signer.service
+Wants=ltmplat-litellm.service ltmplat-owui-signer.service
+
+[Service]
+Type=exec
+User=ubuntu
+EnvironmentFile=/opt/ltm-platform-env/openwebui-0.6.5.env
+EnvironmentFile=-/opt/ltm-platform-env/openwebui-connection.env
+EnvironmentFile=/opt/ltm-platform-env/openwebui-0.6.5-connection.env
+WorkingDirectory=/opt/ltm-platform-env/data/openwebui-0.6.5
+ExecStart=/opt/ltm-platform-env/openwebui-0.6.5/.venv/bin/open-webui serve \
+  --host 127.0.0.1 --port ${OPENWEBUI_PORT}
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

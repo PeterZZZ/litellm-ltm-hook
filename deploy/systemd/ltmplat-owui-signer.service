@@ -1,0 +1,15 @@
+[Unit]
+Description=ltm-platform-env: signer beside Open WebUI 0.6.5, mints the user token Open WebUI 0.10+ mints itself
+After=network-online.target ltmplat-litellm.service
+Wants=ltmplat-litellm.service
+
+[Service]
+Type=exec
+User=ubuntu
+EnvironmentFile=/opt/ltm-platform-env/owui-signer.env
+ExecStart=/opt/ltm-platform-env/openwebui-0.6.5/.venv/bin/python -I /opt/ltm-platform-env/repo/deploy/owui-signer/signer.py
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

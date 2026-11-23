@@ -6,6 +6,7 @@ How to stand up the whole chain this branch was tested on, from an empty host:
 browser ──► Keycloak :8180 (Corp SSO) ◄── sign-in for Open WebUI and the console
    │
    ├─► Open WebUI :8087 ──(shared app key + signed user token)──► LiteLLM :4011 + hook
+   ├─► Open WebUI 0.6.5 :8091 ──(plain user headers)──► signer :4012 ──(the same token)──► LiteLLM :4011
    │                                                                  │ X-MemMachine-* headers
    └─► console :3100 (MemMachine-Platform prototype, mock API)  ◄─────┘
          the platform: verifies the token, enrols the person ──► MemMachine core :8090
@@ -38,6 +39,7 @@ Everything below assumes `ENV_DIR=/opt/ltm-platform-env`, the repo checked out a
 | Python | 3.12 for each venv, via `uv` |
 | LiteLLM | 1.100.1 (`litellm[proxy]`), Postgres 18 for its keys |
 | Open WebUI | 0.11.3 |
+| Open WebUI, the customer's version | 0.6.5, through the signer (step 10a) |
 | Keycloak | 26.7.5, OpenJDK 21 |
 | MemMachine core | `MemMachine/MemMachine`, branch `speedkick`, commit `0b15fad` of 2026-09-10 (v2 REST API on :8090), Postgres 18 + pgvector 0.8.1, Qdrant 1.19.0 |
 | Models | chat `deepinfra/zai-org/GLM-5.2`, embeddings `openai/text-embedding-3-small`, both through LiteLLM |
@@ -411,6 +413,62 @@ already ran, add it in Admin Settings > Connections > the LiteLLM connection >
 Headers: `{"x-memmachine-client": "openwebui"}`. Without it the hook still
 recognises Open WebUI's requests, and labels them `other` when they carry no
 signed user token.
+
+### 10a. Open WebUI 0.6.5 through the signer (optional)
+
+The customer runs Open WebUI 0.6.5. It forwards the signed-in user only as plain
+`X-OpenWebUI-User-Name`, `-Id`, `-Email` and `-Role` headers; the signed token
+the hook and the platform accept arrived in Open WebUI 0.10. Without it every
+chat reaches the platform as the app key's owner and is refused, and nobody has
+memory. `deploy/owui-signer/signer.py` is a small proxy on Open WebUI's host
+that Open WebUI is pointed at in place of LiteLLM: it holds the forwarded-user
+secret, drops the plain headers and mints the token 0.10 would have, with the
+same claims, so LiteLLM, the hook and the platform see what 0.11.3 sends. The
+plain headers are trusted only over loopback from this host's Open WebUI.
+
+A second instance, beside the 0.11.3 one, on the same realm and LiteLLM key:
+
+```bash
+cd $ENV_DIR
+uv venv openwebui-0.6.5/.venv --python 3.12
+# torch first, from the CPU index: 0.6.5 pulls it in, and the default wheel is 3 GB of CUDA.
+VIRTUAL_ENV=openwebui-0.6.5/.venv uv pip install --no-cache torch --index-url https://download.pytorch.org/whl/cpu
+VIRTUAL_ENV=openwebui-0.6.5/.venv uv pip install --no-cache 'open-webui==0.6.5'
+mkdir -p data/openwebui-0.6.5
+for f in openwebui-0.6.5 openwebui-0.6.5-connection owui-signer; do
+  cp repo/deploy/env/$f.env.example $f.env && chmod 600 $f.env; done
+# openwebui-0.6.5.env: WEBUI_SECRET_KEY, OAUTH_CLIENT_SECRET (as openwebui.env);
+# owui-signer.env: FORWARD_USER_INFO_HEADER_JWT_SECRET, the same value as openwebui.env.
+```
+
+Keycloak has to accept the new port's callback: rerun step 5's script with
+`OWUI_URLS=http://127.0.0.1:8087,http://localhost:8087,http://127.0.0.1:8091,http://localhost:8091`
+in its environment. Then:
+
+```bash
+sudo cp $ENV_DIR/repo/deploy/systemd/ltmplat-owui-signer.service $ENV_DIR/repo/deploy/systemd/ltmplat-openwebui-065.service /etc/systemd/system/
+sudo systemctl daemon-reload && sudo systemctl enable --now ltmplat-owui-signer ltmplat-openwebui-065
+until curl -sf http://127.0.0.1:8091/api/version >/dev/null; do sleep 3; done
+curl -s http://127.0.0.1:8091/api/version     # {"version":"0.6.5"}
+```
+
+Sign in through "Corp SSO"; the first user becomes this instance's admin. On an
+install that already ran before `BYPASS_MODEL_ACCESS_CONTROL` was seeded, a
+non-admin sees no models until an admin publishes them (Admin Settings >
+Models, or the 0.6.5 `models/create` API with an empty access control).
+
+A chat with `memmachine-glm-5.2` then shows in LiteLLM's log as the person
+(`user=E12345 client=openwebui`, search and store 200), and the console's
+Audit and Monitor pages record it under Open WebUI. Verified 2026-11-23: a
+fact told in one chat was recalled in a new one; the plain `glm-5.2` tab still
+has no memory, so the side-by-side comparison holds on 0.6.5.
+
+The alternative, not built, is plain-header evidence in the hook and the
+gateway: the hook proposes the person from the plain headers when no token
+arrives, and the platform admits that only on the app key and from Open WebUI's
+address. Same outcome; the evidence is the key and the network instead of a
+signature, so a leaked key then reads anyone's memory. That is the customer's
+security review's call, raised on MemMachine-Platform PR #1450.
 
 ## 11. Claude Code
 
