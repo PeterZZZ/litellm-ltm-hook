@@ -10,8 +10,8 @@ browser ──► Keycloak :8180 (Corp SSO) ◄── sign-in for Open WebUI and
    └─► console :3100 (MemMachine-Platform prototype, mock API)  ◄─────┘
          the platform: verifies the token, enrols the person ──► MemMachine core :8090
          (people, projects and the audit in its fixture; memories at core)
-Claude Code / curl ──(personal virtual key)──► LiteLLM :4011 ──► refused: the console knows
-                                                                 people by Open WebUI's token only
+Claude Code / curl ──(personal virtual key)──► LiteLLM :4011 ──► the console serves the key's
+                                                                 owner, once enrolled (step 11)
 mock platform :8100 (+ portal) ──► MemMachine core :8090   stands alone since 2026-11-16: nothing
                                                             points at it; step 9 keeps it running
 ```
@@ -308,7 +308,7 @@ shows an admin (realm role `admin`, step 5) the People, Audit and Trust pages.
 
 ```bash
 git clone https://github.com/MemVerge/MemMachine-Platform $ENV_DIR/console-repo
-cd $ENV_DIR/console-repo && git checkout feat/company-console-platform
+cd $ENV_DIR/console-repo && git checkout docs/enterprise-console-design   # PR #1553
 cd frontend && pnpm install
 ln -s $ENV_DIR/console-repo/frontend $ENV_DIR/console
 cp $ENV_DIR/repo/deploy/env/console.env.example $ENV_DIR/console.env && chmod 600 $ENV_DIR/console.env
