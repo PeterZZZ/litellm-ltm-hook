@@ -69,6 +69,7 @@ assumes.
 | Situation | Answer |
 |---|---|
 | Unknown or missing service credential | 401 |
+| Mutual TLS on, and the call came without a client certificate, or with another service's | 401 |
 | No key id | 401 |
 | Key not registered, and LiteLLM does not say it is an enrolled person's (see below) | 403 `X-MemMachine-Decision: not-enrolled` |
 | Key reconcile unlinked because LiteLLM reassigned it | 403 `key-reassigned` |
@@ -234,6 +235,67 @@ Open WebUI keeps `ENABLE_FORWARD_USER_INFO_HEADERS=true` and its
 `FORWARD_USER_INFO_HEADER_JWT_SECRET`, which goes to the platform (`key app
 --secret-env`) instead of to LiteLLM.
 
+### Mutual TLS (optional)
+
+The service credential is a bearer secret: anyone who copies it off the
+LiteLLM host can call the platform as that LiteLLM. With mutual TLS, the call
+must also come over a connection where that LiteLLM proved it holds its private
+key. The client certificate's common name is the service label, and the platform
+accepts the credential only with the certificate issued to that label.
+
+The platform runs the CA; each LiteLLM makes its own key and sends only a
+signing request, which the CA signs if its name is a registered service:
+
+```bash
+P="uv run --group platform python -m"
+$P mock_platform.certs --dir pki ca                    # ca.crt, ca.key
+$P mock_platform.certs --dir pki server 127.0.0.1      # platform.crt/.key: the names LiteLLM dials
+
+# on the LiteLLM host: the key stays there
+openssl req -new -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes \
+  -keyout litellm-main.key -out litellm-main.csr -subj "/CN=litellm-main"
+# back at the CA: refused unless litellm-main is a service in the registry
+$P mock_platform.certs --dir pki sign litellm-main.csr --db registry.sqlite   # litellm-main.crt
+
+# (or, for a throwaway stack, key and certificate in one go on the CA side:
+#  $P mock_platform.certs --dir pki client litellm-main)
+
+MOCK_PLATFORM_MTLS_PORT=8443 MOCK_PLATFORM_TLS_CERT=pki/platform.crt \
+MOCK_PLATFORM_TLS_KEY=pki/platform.key MOCK_PLATFORM_CLIENT_CA=pki/ca.crt \
+MOCK_PLATFORM_DB=... MOCK_PLATFORM_CORE_URL=... \
+  uv run --group platform python -m mock_platform.serve --port 8100
+```
+
+`serve.py` runs two listeners on one app: the plain one (`--port`) stays for
+browsers (the portal and its SSO redirects are unchanged), and the TLS one
+requires a client certificate signed by `ca.crt`. With
+`MOCK_PLATFORM_MTLS_PORT` set, the memory API answers only on the TLS listener:
+the plain one refuses it with 401 `no client certificate`. The TLS listener
+binds `MOCK_PLATFORM_MTLS_HOST` (default: `--host`), so it can face other
+machines while the portal stays on 127.0.0.1. If either listener stops, the
+other does too, and the TLS one stopping on its own exits with status 1, so a
+supervisor restarts the platform. `uvicorn mock_platform.app:app` refuses to
+start with `MOCK_PLATFORM_MTLS_PORT` set: it would open no TLS listener.
+LiteLLM then points at the TLS port:
+
+```bash
+MEMMACHINE_BASE_URL=https://127.0.0.1:8443
+MEMMACHINE_CA_CERT=pki/ca.crt                 # checks the platform's certificate
+MEMMACHINE_CLIENT_CERT=litellm-main.crt       # proves which LiteLLM is calling
+MEMMACHINE_CLIENT_KEY=litellm-main.key
+```
+
+A store the platform refuses this way (401) is dead-lettered at once: the
+same request would be refused again. One it cannot connect for (no
+certificate, or another CA's: the handshake fails) is retried, then
+dead-lettered. Fix the certificates before replaying: a personal key's pair
+(Claude Code) is then stored whenever it is replayed, but an Open WebUI pair
+carries a token judged at the turn's start, which the platform accepts only up
+to 15 minutes back; replayed later, or before the fix, it is refused (401) and
+replay drops it. There is no
+revocation list: removing the service from the registry is what stops a leaked
+certificate, together with its credential.
+
 ## The portal: access first, memory second
 
 The platform serves a console at `/portal/`. With SSO configured, "Sign in with
@@ -311,3 +373,6 @@ SameSite=Strict cookie, and writes also need an `X-MM-Portal` header.
 - One org per person, however many projects; sharing is one role (read and
   write), no read-only and no project admins yet.
 - **The portal has no rate limiting**, and pending sign-ins live in memory.
+- **The mock CA is a key on disk** (`certs.py`), with no revocation and no
+  rotation: a real platform issues and renews LiteLLMs' certificates from its
+  own CA or a certificate manager.
